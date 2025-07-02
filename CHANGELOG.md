@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Updated GitHub Actions workflows with latest versions
 - Enhanced README with complete feature overview
 - MCP (Model Context Protocol) server integration
-- Support for Go 1.23
+- Support for Go 1.24
 
 ### Changed
 

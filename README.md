@@ -34,7 +34,7 @@ A powerful CLI tool that analyzes Go codebases and generates graph visualization
 
 ### Prerequisites
 
-- Go 1.23 or higher
+- Go 1.24 or higher
 - Neo4j 5.x or higher
 - Make (for build automation)
 
@@ -400,7 +400,7 @@ gograph/
 
 ### Prerequisites
 
-- Go 1.23+
+- Go 1.24+
 - Neo4j 5.x
 - Make
 - Docker (for integration tests)

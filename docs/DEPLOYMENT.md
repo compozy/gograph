@@ -18,7 +18,7 @@ This guide covers various deployment scenarios for gograph, from local developme
 ### System Requirements
 
 - **Operating System**: Linux, macOS, or Windows
-- **Go**: Version 1.23 or higher
+- **Go**: Version 1.24 or higher
 - **Neo4j**: Version 5.x or higher
 - **Memory**: Minimum 2GB RAM (4GB+ recommended for large projects)
 - **Storage**: Varies based on project size (typically 100MB-1GB)

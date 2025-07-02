@@ -11,7 +11,7 @@ GOFMT=gofmt -s -w
 BINARY_NAME=gograph
 BINARY_DIR=bin
 SRC_DIRS=./...
-LINTCMD=golangci-lint-v2
+LINTCMD=golangci-lint
 
 # -----------------------------------------------------------------------------
 # Build Variables
@@ -62,7 +62,7 @@ tidy:
 
 deps: 
 	$(GOCMD) install gotest.tools/gotestsum@latest
-	$(GOCMD) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6
+	$(GOCMD) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
 	$(GOCMD) install golang.org/x/vuln/cmd/govulncheck@latest
 	$(GOCMD) install github.com/securego/gosec/v2/cmd/gosec@latest
 
@@ -193,7 +193,7 @@ release-dry:
 ci-deps:
 	@echo "Installing CI dependencies..."
 	$(GOCMD) install gotest.tools/gotestsum@latest
-	$(GOCMD) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6
+	$(GOCMD) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
 	$(GOCMD) install golang.org/x/vuln/cmd/govulncheck@latest
 	$(GOCMD) install github.com/securego/gosec/v2/cmd/gosec@latest
 

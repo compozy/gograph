@@ -50,7 +50,7 @@ We welcome various types of contributions:
 
 ### Prerequisites
 
-- Go 1.23 or higher
+- Go 1.24 or higher
 - Neo4j 5.x
 - Make
 - Docker (for integration tests)
@@ -415,7 +415,7 @@ What you expected to happen.
 **Environment**
 
 - OS: [e.g. macOS, Linux]
-- Go version: [e.g. 1.23]
+- Go version: [e.g. 1.24]
 - gograph version: [e.g. v1.0.0]
 
 **Additional context**
