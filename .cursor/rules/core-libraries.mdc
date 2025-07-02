@@ -1,0 +1,81 @@
+---
+description: Required libraries and project utilities for Compozy development
+globs: **/*.go
+alwaysApply: true
+---
+# Core Libraries & Project Utilities
+
+## Required Libraries
+
+<library_requirements type="web_framework">
+**Web Framework:**
+- **MUST use:** `gin-gonic/gin` for HTTP APIs
+</library_requirements>
+
+<library_requirements type="database">
+**Database:**
+- **PostgreSQL:** `jackc/pgx/v5`
+- **Redis:** `redis/go-redis/v9`
+- Always use connection pooling and proper cleanup
+</library_requirements>
+
+<library_requirements type="testing">
+**Testing:**
+- **MUST use:** `stretchr/testify` for assertions and mocks
+- Import as: `github.com/stretchr/testify/assert`, `github.com/stretchr/testify/mock`
+- **STANDARDIZE:** Replace all custom mocks with `testify/mock` implementations
+</library_requirements>
+
+<library_requirements type="validation">
+**Validation:**
+- **MUST use:** `go-playground/validator/v10` for input validation
+</library_requirements>
+
+<library_requirements type="logging">
+**Logging:**
+- **MUST use:** `charmbracelet/log`
+- **NEVER use:** `fmt.Printf` or `log.Printf` for application logging
+</library_requirements>
+
+<library_requirements type="cli">
+**CLI:**
+- **MUST use:** `spf13/cobra` for commands
+</library_requirements>
+
+<library_requirements type="documentation">
+**Documentation:**
+- **MUST use:** `swaggo/swag` for API documentation
+</library_requirements>
+
+## Project Utilities
+
+<utility_pattern type="core_types">
+```go
+// Use project core types
+var taskID core.ID  // UUIDs
+var reference core.Ref  // Polymorphic references
+```
+</utility_pattern>
+
+<utility_pattern type="test_helpers">
+```go
+// Use project test utilities
+func TestService(t *testing.T) {
+    t.Run("Should setup test environment", func(t *testing.T) {
+        db := utils.SetupTest()
+        defer db.Close()
+
+        fixture := utils.SetupFixture("user_data.json")
+        // test implementation
+    })
+}
+```
+</utility_pattern>
+
+<utility_pattern type="template_engine">
+```go
+// Use pkg/tplengine for dynamic configurations
+engine := tplengine.New()
+result, err := engine.Process(template, variables)
+```
+</utility_pattern>

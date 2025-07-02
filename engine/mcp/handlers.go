@@ -1,0 +1,2184 @@
+package mcp
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/compozy/gograph/engine/core"
+	"github.com/compozy/gograph/engine/graph"
+	"github.com/compozy/gograph/engine/query"
+	"github.com/compozy/gograph/pkg/logger"
+	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
+)
+
+// Tool handler implementations - These replace the stub implementations
+
+// HandleAnalyzeProjectInternal analyzes a Go project and stores results in Neo4j
+func (s *Server) HandleAnalyzeProjectInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
+	projectPath, ok := input["project_path"].(string)
+	if !ok {
+		return nil, fmt.Errorf("project_path is required")
+	}
+	projectID, ok := input["project_id"].(string)
+	if !ok {
+		return nil, fmt.Errorf("project_id is required")
+	}
+
+	// Validate path is allowed
+	if !s.isPathAllowed(projectPath) {
+		return nil, fmt.Errorf("path %s is not allowed by security policy", projectPath)
+	}
+
+	logger.Info("analyzing project", "path", projectPath, "project_id", projectID)
+
+	// Create project
+	project := &core.Project{
+		ID:       core.ID(projectID),
+		Name:     projectID,
+		RootPath: projectPath,
+	}
+
+	// Initialize project in graph
+	if err := s.serviceAdapter.InitializeProject(ctx, project); err != nil {
+		return nil, fmt.Errorf("failed to initialize project: %w", err)
+	}
+
+	// Parse project
+	parseResult, err := s.serviceAdapter.ParseProject(ctx, projectPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse project: %w", err)
+	}
+
+	// Analyze project
+	analysisReport, err := s.serviceAdapter.AnalyzeProject(ctx, project.ID, parseResult.Files)
+	if err != nil {
+		return nil, fmt.Errorf("failed to analyze project: %w", err)
+	}
+
+	// Convert to analysis result
+	analysisResult := convertToAnalysisResult(project, parseResult, analysisReport)
+
+	// Import to graph
+	projectGraph, err := s.serviceAdapter.ImportAnalysisResult(ctx, analysisResult)
+	if err != nil {
+		return nil, fmt.Errorf("failed to import project: %w", err)
+	}
+
+	// Get statistics
+	stats, err := s.serviceAdapter.GetProjectStatistics(ctx, project.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get statistics: %w", err)
+	}
+
+	result := map[string]any{
+		"project_id":     projectID,
+		"nodes_created":  len(projectGraph.Nodes),
+		"relationships":  len(projectGraph.Relationships),
+		"files_analyzed": len(parseResult.Files),
+		"statistics":     convertStatistics(stats),
+	}
+
+	response := &ToolResponse{
+		Content: []any{
+			map[string]any{
+				"type": "text",
+				"text": fmt.Sprintf("Successfully analyzed project %s", projectID),
+			},
+			map[string]any{
+				"type": "resource",
+				"resource": map[string]any{
+					"uri":  fmt.Sprintf("/projects/%s/metadata", projectID),
+					"data": result,
+				},
+			},
+		},
+	}
+
+	return response, nil
+}
+
+// HandleExecuteCypherInternal executes a custom Cypher query
+func (s *Server) HandleExecuteCypherInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
+	projectID, ok := input["project_id"].(string)
+	if !ok {
+		return nil, fmt.Errorf("project_id is required")
+	}
+	query, ok := input["query"].(string)
+	if !ok {
+		return nil, fmt.Errorf("query is required")
+	}
+
+	// Get parameters if provided
+	parameters := make(map[string]any)
+	if params, ok := input["parameters"].(map[string]any); ok {
+		parameters = params
+	}
+	// Add project_id to parameters to scope the query
+	parameters["project_id"] = projectID
+
+	logger.Info("executing cypher query", "project_id", projectID, "query", query)
+
+	// Execute query
+	results, err := s.serviceAdapter.ExecuteQuery(ctx, query, parameters)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute query: %w", err)
+	}
+
+	result := map[string]any{
+		"query":        query,
+		"parameters":   parameters,
+		"results":      results,
+		"result_count": len(results),
+	}
+
+	return &ToolResponse{
+		Content: []any{
+			map[string]any{
+				"type": "text",
+				"text": fmt.Sprintf("Query executed successfully, returned %d results", len(results)),
+			},
+			map[string]any{
+				"type": "resource",
+				"resource": map[string]any{
+					"uri":  fmt.Sprintf("/projects/%s/query-results", projectID),
+					"data": result,
+				},
+			},
+		},
+	}, nil
+}
+
+// HandleGetFunctionInfoInternal gets detailed information about a function
+//
+//nolint:funlen // MCP tool handlers can be longer for comprehensive functionality
+func (s *Server) HandleGetFunctionInfoInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
+	projectID, ok := input["project_id"].(string)
+	if !ok {
+		return nil, fmt.Errorf("project_id is required")
+	}
+	functionName, ok := input["function_name"].(string)
+	if !ok {
+		return nil, fmt.Errorf("function_name is required")
+	}
+
+	packageName := ""
+	if p, ok := input["package"].(string); ok {
+		packageName = p
+	}
+	includeCalls := false
+	if ic, ok := input["include_calls"].(bool); ok {
+		includeCalls = ic
+	}
+	includeCallers := false
+	if icr, ok := input["include_callers"].(bool); ok {
+		includeCallers = icr
+	}
+
+	logger.Info("getting function info",
+		"project_id", projectID,
+		"function", functionName,
+		"package", packageName)
+
+	// Build query to find function
+	query := `
+		MATCH (f:Function {project_id: $project_id, name: $function_name})
+	`
+	params := map[string]any{
+		"project_id":    projectID,
+		"function_name": functionName,
+	}
+
+	if packageName != "" {
+		query += " WHERE f.package = $package"
+		params["package"] = packageName
+	}
+
+	query += `
+		OPTIONAL MATCH (file:File {project_id: $project_id})-[:CONTAINS]->(f)
+		RETURN f, file.path as file_path
+	`
+
+	results, err := s.serviceAdapter.ExecuteQuery(ctx, query, params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query function: %w", err)
+	}
+
+	if len(results) == 0 {
+		return &ToolResponse{
+			Content: []any{
+				map[string]any{
+					"type": "text",
+					"text": fmt.Sprintf("Function %s not found", functionName),
+				},
+			},
+		}, nil
+	}
+
+	functionData := results[0]
+	var functionNode map[string]any
+
+	// Handle different possible types for the function node
+	switch f := functionData["f"].(type) {
+	case map[string]any:
+		functionNode = f
+	case neo4j.Node:
+		// Convert Neo4j Node to map[string]any
+		functionNode = f.Props
+	default:
+		return nil, fmt.Errorf("invalid function data format: expected map[string]any or neo4j.Node, got %T",
+			functionData["f"])
+	}
+	filePath := ""
+	if fp, ok := functionData["file_path"].(string); ok {
+		filePath = fp
+	}
+
+	result := map[string]any{
+		"function_name": functionName,
+		"package":       packageName,
+		"signature":     functionNode["signature"],
+		"file":          filePath,
+		"line_start":    functionNode["line_start"],
+		"line_end":      functionNode["line_end"],
+		"is_exported":   functionNode["is_exported"],
+	}
+
+	// Include function calls and callers if requested
+	s.addFunctionRelationships(ctx, result, params, includeCalls, includeCallers)
+
+	return &ToolResponse{
+		Content: []any{
+			map[string]any{
+				"type": "text",
+				"text": fmt.Sprintf("Function information for %s", functionName),
+			},
+			map[string]any{
+				"type": "resource",
+				"resource": map[string]any{
+					"uri":  fmt.Sprintf("/projects/%s/functions/%s", projectID, functionName),
+					"data": result,
+				},
+			},
+		},
+	}, nil
+}
+
+// addFunctionRelationships adds calls and callers to function result
+func (s *Server) addFunctionRelationships(
+	ctx context.Context,
+	result map[string]any,
+	params map[string]any,
+	includeCalls, includeCallers bool,
+) {
+	if includeCalls {
+		callsQuery := `
+			MATCH (f:Function {project_id: $project_id, name: $function_name})-[:CALLS]->(called:Function)
+			RETURN called.name as name, called.package as package, called.signature as signature
+		`
+		callsResults, err := s.serviceAdapter.ExecuteQuery(ctx, callsQuery, params)
+		if err != nil {
+			logger.Warn("failed to fetch function calls", "error", err)
+		} else {
+			result["calls"] = callsResults
+		}
+	}
+
+	if includeCallers {
+		callersQuery := `
+			MATCH (caller:Function)-[:CALLS]->(f:Function {project_id: $project_id, name: $function_name})
+			RETURN caller.name as name, caller.package as package, caller.signature as signature
+		`
+		callersResults, err := s.serviceAdapter.ExecuteQuery(ctx, callersQuery, params)
+		if err != nil {
+			logger.Warn("failed to fetch function callers", "error", err)
+		} else {
+			result["callers"] = callersResults
+		}
+	}
+}
+
+// handleQueryDependencies finds dependencies for a package or function
+//
+//nolint:funlen // MCP tool handlers can be longer for comprehensive functionality
+func (s *Server) handleQueryDependenciesInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
+	projectID, ok := input["project_id"].(string)
+	if !ok {
+		return nil, fmt.Errorf("project_id is required")
+	}
+	path, ok := input["path"].(string)
+	if !ok {
+		return nil, fmt.Errorf("path is required")
+	}
+
+	direction := ""
+	if d, ok := input["direction"].(string); ok {
+		direction = d
+	}
+	recursive := false
+	if r, ok := input["recursive"].(bool); ok {
+		recursive = r
+	}
+
+	logger.Info("querying dependencies",
+		"project_id", projectID,
+		"path", path,
+		"direction", direction,
+		"recursive", recursive)
+
+	// Build dependency query based on direction
+	var query string
+	params := map[string]any{
+		"project_id": projectID,
+		"path":       path,
+	}
+
+	switch direction {
+	case "incoming":
+		if recursive {
+			query = `
+				MATCH path = (start)-[:DEPENDS_ON*]->(target)
+				WHERE target.project_id = $project_id 
+				AND (target.path = $path OR target.name = $path)
+				RETURN start, relationships(path) as deps
+			`
+		} else {
+			query = `
+				MATCH (start)-[:DEPENDS_ON]->(target)
+				WHERE target.project_id = $project_id 
+				AND (target.path = $path OR target.name = $path)
+				RETURN start, target
+			`
+		}
+	case "outgoing":
+		if recursive {
+			query = `
+				MATCH path = (start)-[:DEPENDS_ON*]->(target)
+				WHERE start.project_id = $project_id 
+				AND (start.path = $path OR start.name = $path)
+				RETURN target, relationships(path) as deps
+			`
+		} else {
+			query = `
+				MATCH (start)-[:DEPENDS_ON]->(target)
+				WHERE start.project_id = $project_id 
+				AND (start.path = $path OR start.name = $path)
+				RETURN start, target
+			`
+		}
+	default:
+		// Both directions
+		if recursive {
+			query = `
+				MATCH path = (start)-[:DEPENDS_ON*]-(target)
+				WHERE (start.project_id = $project_id OR target.project_id = $project_id)
+				AND (start.path = $path OR start.name = $path OR target.path = $path OR target.name = $path)
+				RETURN start, target, relationships(path) as deps
+			`
+		} else {
+			query = `
+				MATCH (start)-[:DEPENDS_ON]-(target)
+				WHERE (start.project_id = $project_id OR target.project_id = $project_id)
+				AND (start.path = $path OR start.name = $path OR target.path = $path OR target.name = $path)
+				RETURN start, target
+			`
+		}
+	}
+
+	results, err := s.serviceAdapter.ExecuteQuery(ctx, query, params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query dependencies: %w", err)
+	}
+
+	result := map[string]any{
+		"path":         path,
+		"direction":    direction,
+		"recursive":    recursive,
+		"dependencies": results,
+		"count":        len(results),
+	}
+
+	return &ToolResponse{
+		Content: []any{
+			map[string]any{
+				"type": "text",
+				"text": fmt.Sprintf("Found %d dependencies for %s", len(results), path),
+			},
+			map[string]any{
+				"type": "resource",
+				"resource": map[string]any{
+					"uri":  fmt.Sprintf("/projects/%s/dependencies", projectID),
+					"data": result,
+				},
+			},
+		},
+	}, nil
+}
+
+// Helper methods
+
+func (s *Server) isPathAllowed(path string) bool {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+
+	// Check forbidden paths
+	for _, forbidden := range s.config.Security.ForbiddenPaths {
+		if strings.Contains(absPath, forbidden) {
+			return false
+		}
+	}
+
+	// Check allowed paths
+	for _, allowed := range s.config.Security.AllowedPaths {
+		allowedAbs, err := filepath.Abs(allowed)
+		if err != nil {
+			continue
+		}
+		if strings.HasPrefix(absPath, allowedAbs) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// handleFindImplementations finds all implementations of an interface
+//
+//nolint:funlen // MCP tool handlers can be longer for comprehensive functionality
+func (s *Server) handleFindImplementationsInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
+	projectID, ok := input["project_id"].(string)
+	if !ok {
+		return nil, fmt.Errorf("project_id is required")
+	}
+	interfaceName, ok := input["interface_name"].(string)
+	if !ok {
+		return nil, fmt.Errorf("interface_name is required")
+	}
+	packageName := ""
+	if p, ok := input["package"].(string); ok {
+		packageName = p
+	}
+
+	logger.Info("finding implementations",
+		"project_id", projectID,
+		"interface", interfaceName,
+		"package", packageName)
+
+	// Query to find interface implementations
+	query := `
+		MATCH (iface:Interface {project_id: $project_id, name: $interface_name})
+		MATCH (impl:Struct)-[:IMPLEMENTS]->(iface)
+		OPTIONAL MATCH (impl_file:File)-[:CONTAINS]->(impl)
+		RETURN impl, impl_file.path as file_path
+	`
+	params := map[string]any{
+		"project_id":     projectID,
+		"interface_name": interfaceName,
+	}
+
+	if packageName != "" {
+		query = strings.Replace(query, "Interface {", "Interface {package: $package, ", 1)
+		params["package"] = packageName
+	}
+
+	results, err := s.serviceAdapter.ExecuteQuery(ctx, query, params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find implementations: %w", err)
+	}
+
+	implementations := make([]map[string]any, len(results))
+	for i, result := range results {
+		impl, ok := result["impl"].(map[string]any)
+		if !ok {
+			continue // Skip invalid entries
+		}
+		filePath := ""
+		if fp, ok := result["file_path"].(string); ok {
+			filePath = fp
+		}
+
+		implementations[i] = map[string]any{
+			"name":        impl["name"],
+			"package":     impl["package"],
+			"file":        filePath,
+			"line_start":  impl["line_start"],
+			"line_end":    impl["line_end"],
+			"is_exported": impl["is_exported"],
+		}
+	}
+
+	result := map[string]any{
+		"interface_name":  interfaceName,
+		"package":         packageName,
+		"implementations": implementations,
+		"count":           len(implementations),
+	}
+
+	return &ToolResponse{
+		Content: []any{
+			map[string]any{
+				"type": "text",
+				"text": fmt.Sprintf("Found %d implementations of %s", len(implementations), interfaceName),
+			},
+			map[string]any{
+				"type": "resource",
+				"resource": map[string]any{
+					"uri":  fmt.Sprintf("/projects/%s/interfaces/%s/implementations", projectID, interfaceName),
+					"data": result,
+				},
+			},
+		},
+	}, nil
+}
+
+// handleTraceCallChain traces call chains between functions
+func (s *Server) handleTraceCallChainInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
+	projectID, ok := input["project_id"].(string)
+	if !ok {
+		return nil, fmt.Errorf("project_id is required")
+	}
+	fromFunction, ok := input["from_function"].(string)
+	if !ok {
+		return nil, fmt.Errorf("from_function is required")
+	}
+	toFunction := ""
+	if t, ok := input["to_function"].(string); ok {
+		toFunction = t
+	}
+	maxDepth := 5 // Default depth
+	if m, ok := input["max_depth"].(float64); ok {
+		maxDepth = int(m)
+	}
+
+	logger.Info("tracing call chain",
+		"project_id", projectID,
+		"from", fromFunction,
+		"to", toFunction,
+		"max_depth", maxDepth)
+
+	var query string
+	params := map[string]any{
+		"project_id":    projectID,
+		"from_function": fromFunction,
+		"max_depth":     maxDepth,
+	}
+
+	if toFunction != "" {
+		// Find path between specific functions
+		query = `
+			MATCH path = (start:Function {project_id: $project_id, name: $from_function})-[:CALLS*1..` + fmt.Sprintf("%d", maxDepth) + `]->(end:Function {name: $to_function})
+			RETURN [node in nodes(path) | {name: node.name, package: node.package}] as call_chain,
+			       length(path) as depth
+			ORDER BY depth
+			LIMIT 10
+		`
+		params["to_function"] = toFunction
+	} else {
+		// Find all calls from the function up to max depth
+		query = `
+			MATCH path = (start:Function {project_id: $project_id, name: $from_function})-[:CALLS*1..` + fmt.Sprintf("%d", maxDepth) + `]->(called:Function)
+			RETURN [node in nodes(path) | {name: node.name, package: node.package}] as call_chain,
+			       length(path) as depth
+			ORDER BY depth
+			LIMIT 50
+		`
+	}
+
+	results, err := s.serviceAdapter.ExecuteQuery(ctx, query, params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to trace call chain: %w", err)
+	}
+
+	result := map[string]any{
+		"from_function": fromFunction,
+		"to_function":   toFunction,
+		"max_depth":     maxDepth,
+		"call_chains":   results,
+		"count":         len(results),
+	}
+
+	return &ToolResponse{
+		Content: []any{
+			map[string]any{
+				"type": "text",
+				"text": fmt.Sprintf("Found %d call chains from %s", len(results), fromFunction),
+			},
+			map[string]any{
+				"type": "resource",
+				"resource": map[string]any{
+					"uri":  fmt.Sprintf("/projects/%s/call-chains", projectID),
+					"data": result,
+				},
+			},
+		},
+	}, nil
+}
+
+// handleDetectCircularDeps detects circular dependencies
+func (s *Server) handleDetectCircularDepsInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
+	projectID, ok := input["project_id"].(string)
+	if !ok {
+		return nil, fmt.Errorf("project_id is required")
+	}
+	scope := "packages"
+	if s, ok := input["scope"].(string); ok {
+		scope = s
+	}
+
+	logger.Info("detecting circular dependencies",
+		"project_id", projectID, "scope", scope)
+
+	var query string
+	params := map[string]any{"project_id": projectID}
+
+	switch scope {
+	case "packages":
+		query = `
+			MATCH (p1:Package {project_id: $project_id})-[:DEPENDS_ON*2..]->(p1)
+			RETURN collect(DISTINCT p1.name) as cycle_packages
+		`
+	case "functions":
+		query = `
+			MATCH (f1:Function {project_id: $project_id})-[:CALLS*2..]->(f1)
+			RETURN collect(DISTINCT f1.name) as cycle_functions
+		`
+	default:
+		query = `
+			MATCH (n {project_id: $project_id})-[:DEPENDS_ON|CALLS*2..]->(n)
+			RETURN collect(DISTINCT n.name) as cycles, labels(n)[0] as type
+		`
+	}
+
+	results, err := s.serviceAdapter.ExecuteQuery(ctx, query, params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to detect circular dependencies: %w", err)
+	}
+
+	result := map[string]any{
+		"scope":   scope,
+		"circles": results,
+		"count":   len(results),
+	}
+
+	return &ToolResponse{
+		Content: []any{
+			map[string]any{
+				"type": "text",
+				"text": fmt.Sprintf("Detected %d circular dependencies in %s", len(results), scope),
+			},
+			map[string]any{
+				"type": "resource",
+				"resource": map[string]any{
+					"uri":  fmt.Sprintf("/projects/%s/circular-deps", projectID),
+					"data": result,
+				},
+			},
+		},
+	}, nil
+}
+
+// handleListPackages lists all packages in the project
+func (s *Server) handleListPackagesInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
+	projectID, ok := input["project_id"].(string)
+	if !ok {
+		return nil, fmt.Errorf("project_id is required")
+	}
+	pattern := ""
+	if p, ok := input["pattern"].(string); ok {
+		pattern = p
+	}
+	includeExternal := false
+	if ie, ok := input["include_external"].(bool); ok {
+		includeExternal = ie
+	}
+
+	logger.Info("listing packages",
+		"project_id", projectID,
+		"pattern", pattern,
+		"include_external", includeExternal)
+
+	query := `
+		MATCH (p:Package {project_id: $project_id})
+		OPTIONAL MATCH (p)<-[:BELONGS_TO]-(f:File)
+		OPTIONAL MATCH (p)<-[:BELONGS_TO]-(fn:Function)
+		RETURN p.name as name, p.path as path, count(DISTINCT f) as file_count, count(DISTINCT fn) as function_count
+		ORDER BY p.name
+	`
+	params := map[string]any{"project_id": projectID}
+
+	if pattern != "" {
+		query = strings.Replace(query, "ORDER BY p.name", "WHERE p.name CONTAINS $pattern ORDER BY p.name", 1)
+		params["pattern"] = pattern
+	}
+
+	results, err := s.serviceAdapter.ExecuteQuery(ctx, query, params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list packages: %w", err)
+	}
+
+	result := map[string]any{
+		"packages":         results,
+		"count":            len(results),
+		"pattern":          pattern,
+		"include_external": includeExternal,
+	}
+
+	return &ToolResponse{
+		Content: []any{
+			map[string]any{
+				"type": "text",
+				"text": fmt.Sprintf("Found %d packages", len(results)),
+			},
+			map[string]any{
+				"type": "resource",
+				"resource": map[string]any{
+					"uri":  fmt.Sprintf("/projects/%s/packages", projectID),
+					"data": result,
+				},
+			},
+		},
+	}, nil
+}
+
+// handleGetPackageStructure gets detailed structure of a package
+//
+//nolint:funlen // MCP tool handlers can be longer for comprehensive functionality
+func (s *Server) handleGetPackageStructureInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
+	projectID, ok := input["project_id"].(string)
+	if !ok {
+		return nil, fmt.Errorf("project_id is required")
+	}
+	packageName, ok := input["package"].(string)
+	if !ok {
+		return nil, fmt.Errorf("package is required")
+	}
+	includePrivate := false
+	if ip, ok := input["include_private"].(bool); ok {
+		includePrivate = ip
+	}
+
+	logger.Info("getting package structure",
+		"project_id", projectID,
+		"package", packageName,
+		"include_private", includePrivate)
+
+	// Get package structure
+	query := `
+		MATCH (pkg:Package {project_id: $project_id, name: $package})
+		OPTIONAL MATCH (pkg)<-[:BELONGS_TO]-(f:File)
+		OPTIONAL MATCH (pkg)<-[:BELONGS_TO]-(fn:Function)
+		OPTIONAL MATCH (pkg)<-[:BELONGS_TO]-(s:Struct)
+		OPTIONAL MATCH (pkg)<-[:BELONGS_TO]-(i:Interface)
+		RETURN pkg,
+		       collect(DISTINCT {name: f.name, path: f.path}) as files,
+		       collect(DISTINCT {name: fn.name, signature: fn.signature, is_exported: fn.is_exported}) as functions,
+		       collect(DISTINCT {name: s.name, is_exported: s.is_exported}) as structs,
+		       collect(DISTINCT {name: i.name, is_exported: i.is_exported}) as interfaces
+	`
+	params := map[string]any{
+		"project_id": projectID,
+		"package":    packageName,
+	}
+
+	results, err := s.serviceAdapter.ExecuteQuery(ctx, query, params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get package structure: %w", err)
+	}
+
+	if len(results) == 0 {
+		return &ToolResponse{
+			Content: []any{
+				map[string]any{
+					"type": "text",
+					"text": fmt.Sprintf("Package %s not found", packageName),
+				},
+			},
+		}, nil
+	}
+
+	packageData := results[0]
+	files, ok := packageData["files"].([]any)
+	if !ok {
+		files = []any{}
+	}
+	functions, ok := packageData["functions"].([]any)
+	if !ok {
+		functions = []any{}
+	}
+	structs, ok := packageData["structs"].([]any)
+	if !ok {
+		structs = []any{}
+	}
+	interfaces, ok := packageData["interfaces"].([]any)
+	if !ok {
+		interfaces = []any{}
+	}
+
+	// Filter out private elements if not requested
+	if !includePrivate {
+		functions = filterExported(functions)
+		structs = filterExported(structs)
+		interfaces = filterExported(interfaces)
+	}
+
+	result := map[string]any{
+		"package":         packageName,
+		"files":           files,
+		"functions":       functions,
+		"types":           structs,
+		"interfaces":      interfaces,
+		"include_private": includePrivate,
+	}
+
+	return &ToolResponse{
+		Content: []any{
+			map[string]any{
+				"type": "text",
+				"text": fmt.Sprintf("Package structure for %s", packageName),
+			},
+			map[string]any{
+				"type": "resource",
+				"resource": map[string]any{
+					"uri":  fmt.Sprintf("/projects/%s/packages/%s/structure", projectID, packageName),
+					"data": result,
+				},
+			},
+		},
+	}, nil
+}
+
+// handleNaturalLanguageQuery converts natural language to Cypher and executes
+func (s *Server) handleNaturalLanguageQueryInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
+	projectID, ok := input["project_id"].(string)
+	if !ok {
+		return nil, fmt.Errorf("project_id is required")
+	}
+	query, ok := input["query"].(string)
+	if !ok {
+		return nil, fmt.Errorf("query is required")
+	}
+	context := ""
+	if c, ok := input["context"].(string); ok {
+		context = c
+	}
+
+	logger.Info("natural language query",
+		"project_id", projectID,
+		"query", query,
+		"context", context)
+
+	// Use LLM service to translate natural language to Cypher
+	var cypherQuery string
+	var err error
+
+	if s.llmService != nil {
+		// Get schema for the project
+		schema, schemaErr := s.llmService.GetSchema(ctx, projectID)
+		if schemaErr != nil {
+			logger.Warn("Failed to get schema, using fallback", "error", schemaErr)
+			cypherQuery = generateFallbackCypher(query, projectID)
+		} else {
+			result, err := s.llmService.Translate(ctx, query, schema)
+			if err != nil {
+				logger.Warn("Failed to translate query with LLM, using fallback", "error", err)
+				cypherQuery = generateFallbackCypher(query, projectID)
+			} else {
+				cypherQuery = result.Query
+			}
+		}
+	} else {
+		cypherQuery = generateFallbackCypher(query, projectID)
+	}
+
+	// Execute the generated Cypher query
+	params := map[string]any{"project_id": projectID}
+	results, err := s.serviceAdapter.ExecuteQuery(ctx, cypherQuery, params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute generated query: %w", err)
+	}
+
+	result := map[string]any{
+		"natural_query": query,
+		"cypher_query":  cypherQuery,
+		"context":       context,
+		"results":       results,
+		"result_count":  len(results),
+	}
+
+	return &ToolResponse{
+		Content: []any{
+			map[string]any{
+				"type": "text",
+				"text": fmt.Sprintf("Natural language query executed, returned %d results", len(results)),
+			},
+			map[string]any{
+				"type": "resource",
+				"resource": map[string]any{
+					"uri":  fmt.Sprintf("/projects/%s/nl-query-results", projectID),
+					"data": result,
+				},
+			},
+		},
+	}, nil
+}
+
+// handleVerifyCodeExists verifies if a code element exists
+//
+//nolint:gocyclo,funlen // MCP tool handlers need multiple branches for different element types
+func (s *Server) HandleVerifyCodeExistsInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
+	projectID, ok := input["project_id"].(string)
+	if !ok {
+		return nil, fmt.Errorf("project_id is required")
+	}
+	elementType, ok := input["element_type"].(string)
+	if !ok {
+		return nil, fmt.Errorf("element_type is required")
+	}
+	name, ok := input["name"].(string)
+	if !ok {
+		return nil, fmt.Errorf("name is required")
+	}
+	packageName := ""
+	if p, ok := input["package"].(string); ok {
+		packageName = p
+	}
+
+	logger.Info("verifying code exists",
+		"project_id", projectID,
+		"type", elementType,
+		"name", name,
+		"package", packageName)
+
+	// Build query based on element type
+	var query string
+	params := map[string]any{
+		"project_id": projectID,
+		"name":       name,
+	}
+
+	switch strings.ToLower(elementType) {
+	case "function":
+		query = `MATCH (f:Function {project_id: $project_id, name: $name})`
+		if packageName != "" {
+			query += ` WHERE f.package = $package`
+			params["package"] = packageName
+		}
+		query += ` RETURN f, exists((f)<-[:CONTAINS]-(:File)) as has_file`
+	case "struct", "type":
+		query = `MATCH (s:Struct {project_id: $project_id, name: $name})`
+		if packageName != "" {
+			query += ` WHERE s.package = $package`
+			params["package"] = packageName
+		}
+		query += ` RETURN s, exists((s)<-[:CONTAINS]-(:File)) as has_file`
+	case "interface":
+		query = `MATCH (i:Interface {project_id: $project_id, name: $name})`
+		if packageName != "" {
+			query += ` WHERE i.package = $package`
+			params["package"] = packageName
+		}
+		query += ` RETURN i, exists((i)<-[:CONTAINS]-(:File)) as has_file`
+	case "package":
+		query = `MATCH (p:Package {project_id: $project_id, name: $name}) RETURN p, true as has_file`
+	default:
+		return nil, fmt.Errorf("unsupported element type: %s", elementType)
+	}
+
+	results, err := s.serviceAdapter.ExecuteQuery(ctx, query, params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to verify code existence: %w", err)
+	}
+
+	exists := len(results) > 0
+	var elementData map[string]any
+	if exists {
+		elementData = results[0]
+	}
+
+	result := map[string]any{
+		"exists":       exists,
+		"element_type": elementType,
+		"name":         name,
+		"package":      packageName,
+	}
+
+	if exists && elementData != nil {
+		// Add detailed information about the found element
+		for key, value := range elementData {
+			if key != "has_file" {
+				if nodeData, ok := value.(map[string]any); ok {
+					result["details"] = nodeData
+				}
+			}
+		}
+	}
+
+	message := fmt.Sprintf("Element %s not found", name)
+	if exists {
+		message = fmt.Sprintf("Element %s exists", name)
+	}
+
+	return &ToolResponse{
+		Content: []any{
+			map[string]any{
+				"type": "text",
+				"text": message,
+			},
+			map[string]any{
+				"type": "resource",
+				"resource": map[string]any{
+					"uri":  fmt.Sprintf("/projects/%s/verify/%s", projectID, name),
+					"data": result,
+				},
+			},
+		},
+	}, nil
+}
+
+// Helper methods and conversion functions
+
+func filterExported(items []any) []any {
+	var filtered []any
+	for _, item := range items {
+		if itemMap, ok := item.(map[string]any); ok {
+			if exported, ok := itemMap["is_exported"].(bool); ok && exported {
+				filtered = append(filtered, item)
+			}
+		}
+	}
+	return filtered
+}
+
+func generateFallbackCypher(naturalQuery, projectID string) string {
+	// Simple fallback query generation based on keywords
+	query := strings.ToLower(naturalQuery)
+
+	if strings.Contains(query, "function") {
+		return fmt.Sprintf(
+			"MATCH (f:Function {project_id: '%s'}) RETURN f.name, f.package, f.signature LIMIT 10",
+			projectID,
+		)
+	}
+	if strings.Contains(query, "package") {
+		return fmt.Sprintf("MATCH (p:Package {project_id: '%s'}) RETURN p.name, p.path LIMIT 10", projectID)
+	}
+	if strings.Contains(query, "struct") || strings.Contains(query, "type") {
+		return fmt.Sprintf("MATCH (s:Struct {project_id: '%s'}) RETURN s.name, s.package LIMIT 10", projectID)
+	}
+	if strings.Contains(query, "interface") {
+		return fmt.Sprintf("MATCH (i:Interface {project_id: '%s'}) RETURN i.name, i.package LIMIT 10", projectID)
+	}
+
+	// Default: show project overview
+	return fmt.Sprintf("MATCH (n {project_id: '%s'}) RETURN labels(n)[0] as type, count(*) as count", projectID)
+}
+
+// Remaining stub handlers - These will be implemented in Phase 2
+
+// handleGetCodeContext gets context around a code element
+func (s *Server) handleGetCodeContextInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
+	projectID, elementType, name, contextLines, err := s.parseCodeContextInput(input)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get the element's location from the graph
+	query, err := s.buildElementLocationQuery(elementType)
+	if err != nil {
+		return nil, err
+	}
+
+	results, err := s.serviceAdapter.ExecuteQuery(ctx, query, map[string]any{
+		"project_id": projectID,
+		"name":       name,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to query element location: %w", err)
+	}
+
+	return s.extractCodeContextFromResults(results, projectID, elementType, name, contextLines)
+}
+
+// buildElementLocationQuery builds a query to find an element's location
+func (s *Server) buildElementLocationQuery(elementType string) (string, error) {
+	switch elementType {
+	case "function":
+		return `
+			MATCH (f:Function {project_id: $project_id, name: $name})
+			OPTIONAL MATCH (file:File)-[:CONTAINS]->(f)
+			RETURN f.line_start as line_start, f.line_end as line_end, file.path as file_path
+			LIMIT 1
+		`, nil
+	case "struct":
+		return `
+			MATCH (s:Struct {project_id: $project_id, name: $name})
+			OPTIONAL MATCH (file:File)-[:CONTAINS]->(s)
+			RETURN s.line_start as line_start, s.line_end as line_end, file.path as file_path
+			LIMIT 1
+		`, nil
+	case "interface":
+		return `
+			MATCH (i:Interface {project_id: $project_id, name: $name})
+			OPTIONAL MATCH (file:File)-[:CONTAINS]->(i)
+			RETURN i.line_start as line_start, i.line_end as line_end, file.path as file_path
+			LIMIT 1
+		`, nil
+	default:
+		return "", fmt.Errorf("unsupported element type: %s", elementType)
+	}
+}
+
+// codeContextParams holds parameters for code context requests
+// parseCodeContextInput parses and validates input for code context requests
+func (s *Server) parseCodeContextInput(
+	input map[string]any,
+) (projectID, elementType, name string, contextLines int, err error) {
+	projectID, ok := input["project_id"].(string)
+	if !ok {
+		return "", "", "", 0, fmt.Errorf("project_id is required")
+	}
+	elementType, ok = input["element_type"].(string)
+	if !ok {
+		return "", "", "", 0, fmt.Errorf("element_type is required")
+	}
+	name, ok = input["name"].(string)
+	if !ok {
+		return "", "", "", 0, fmt.Errorf("name is required")
+	}
+	contextLines = 5 // Default
+	if cl, ok := input["context_lines"].(float64); ok {
+		contextLines = int(cl)
+	}
+
+	logger.Info("getting code context",
+		"project_id", projectID,
+		"type", elementType,
+		"name", name,
+		"context_lines", contextLines)
+
+	return projectID, elementType, name, contextLines, nil
+}
+
+// extractCodeContextFromResults processes query results and extracts code context
+func (s *Server) extractCodeContextFromResults(
+	results []map[string]any,
+	projectID, elementType, name string,
+	contextLines int,
+) (*ToolResponse, error) {
+	if len(results) == 0 {
+		return &ToolResponse{
+			Content: []any{
+				map[string]any{
+					"type": "text",
+					"text": fmt.Sprintf("%s '%s' not found in project", elementType, name),
+				},
+			},
+		}, nil
+	}
+
+	elementData := results[0]
+	filePath, ok := elementData["file_path"].(string)
+	if !ok {
+		return &ToolResponse{
+			Content: []any{
+				map[string]any{
+					"type": "text",
+					"text": fmt.Sprintf("Invalid file_path data for %s '%s'", elementType, name),
+				},
+			},
+		}, nil
+	}
+	lineStart, ok := elementData["line_start"].(int64)
+	if !ok {
+		lineStart = 1 // Default to line 1 if not available
+	}
+
+	if filePath == "" {
+		return &ToolResponse{
+			Content: []any{
+				map[string]any{
+					"type": "text",
+					"text": fmt.Sprintf("File path not available for %s '%s'", elementType, name),
+				},
+			},
+		}, nil
+	}
+
+	// Read the file and extract context
+	contextCode, err := s.readFileContext(filePath, int(lineStart), contextLines)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file context: %w", err)
+	}
+
+	result := fmt.Sprintf("// File: %s (around line %d)\n%s", filePath, lineStart, contextCode)
+
+	return &ToolResponse{
+		Content: []any{
+			map[string]any{
+				"type": "text",
+				"text": fmt.Sprintf("Code context for %s", name),
+			},
+			map[string]any{
+				"type": "resource",
+				"resource": map[string]any{
+					"uri":  fmt.Sprintf("/projects/%s/context/%s", projectID, name),
+					"data": map[string]any{"code": result},
+				},
+			},
+		},
+	}, nil
+}
+
+// handleValidateImportPath validates an import path
+func (s *Server) handleValidateImportPathInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
+	projectID, ok := input["project_id"].(string)
+	if !ok {
+		return nil, fmt.Errorf("project_id is required")
+	}
+	importPath, ok := input["import_path"].(string)
+	if !ok {
+		return nil, fmt.Errorf("import_path is required")
+	}
+	fromPackage := ""
+	if fp, ok := input["from_package"].(string); ok {
+		fromPackage = fp
+	}
+
+	logger.Info("validating import path",
+		"project_id", projectID,
+		"import_path", importPath,
+		"from_package", fromPackage)
+
+	// Check if the import path exists in the project's packages
+	query := `
+		MATCH (p:Package {project_id: $project_id})
+		WHERE p.import_path = $import_path OR p.name = $import_path
+		RETURN p.name as package_name, p.import_path as resolved_path, p.path as file_path
+	`
+
+	results, err := s.serviceAdapter.ExecuteQuery(ctx, query, map[string]any{
+		"project_id":  projectID,
+		"import_path": importPath,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to validate import path: %w", err)
+	}
+
+	isValid := len(results) > 0
+	var resolvedPath string
+	var packageName string
+
+	if isValid {
+		packageData := results[0]
+		var ok bool
+		packageName, ok = packageData["package_name"].(string)
+		if !ok {
+			packageName = importPath // Fallback to import path
+		}
+		resolvedPath, ok = packageData["resolved_path"].(string)
+		if !ok {
+			resolvedPath = importPath // Fallback to import path
+		}
+		if resolvedPath == "" {
+			resolvedPath = importPath
+		}
+	} else {
+		// Check if it's a standard library package
+		isValid = s.isStandardLibraryPackage(importPath)
+		resolvedPath = importPath
+		packageName = importPath
+	}
+
+	result := map[string]any{
+		"valid":        isValid,
+		"import_path":  importPath,
+		"resolved_to":  resolvedPath,
+		"package_name": packageName,
+		"from_package": fromPackage,
+		"is_standard":  s.isStandardLibraryPackage(importPath),
+		"is_external":  !isValid && !s.isStandardLibraryPackage(importPath),
+	}
+
+	return &ToolResponse{
+		Content: []any{
+			map[string]any{
+				"type": "text",
+				"text": fmt.Sprintf("Import path %s is valid", importPath),
+			},
+			map[string]any{
+				"type": "resource",
+				"resource": map[string]any{
+					"uri":  fmt.Sprintf("/projects/%s/imports/%s", projectID, importPath),
+					"data": result,
+				},
+			},
+		},
+	}, nil
+}
+
+// handleDetectCodePatterns detects code patterns
+func (s *Server) handleDetectCodePatternsInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
+	projectID, ok := input["project_id"].(string)
+	if !ok {
+		return nil, fmt.Errorf("project_id is required")
+	}
+	// Extract patterns filter (optional)
+	_ = input["patterns"] // TODO: Use specific patterns filter in future
+	scope := ""
+	if s, ok := input["scope"].(string); ok {
+		scope = s
+	}
+
+	logger.Info("detecting code patterns",
+		"project_id", projectID, "scope", scope)
+	// Detect common Go patterns in the codebase
+	patternsFound := s.detectCommonPatterns(ctx, projectID, scope)
+
+	result := map[string]any{
+		"patterns_found": patternsFound,
+		"scope":          scope,
+		"count":          len(patternsFound),
+	}
+
+	return &ToolResponse{
+		Content: []any{
+			map[string]any{
+				"type": "text",
+				"text": "Pattern detection complete",
+			},
+			map[string]any{
+				"type": "resource",
+				"resource": map[string]any{
+					"uri":  fmt.Sprintf("/projects/%s/patterns", projectID),
+					"data": result,
+				},
+			},
+		},
+	}, nil
+}
+
+// handleGetNamingConventions analyzes naming conventions
+func (s *Server) handleGetNamingConventionsInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
+	projectID, ok := input["project_id"].(string)
+	if !ok {
+		return nil, fmt.Errorf("project_id is required")
+	}
+	scope := ""
+	if s, ok := input["scope"].(string); ok {
+		scope = s
+	}
+	includeSuggestions := false
+	if is, ok := input["include_suggestions"].(bool); ok {
+		includeSuggestions = is
+	}
+
+	logger.Info("getting naming conventions",
+		"project_id", projectID,
+		"scope", scope,
+		"include_suggestions", includeSuggestions)
+
+	// Analyze naming conventions in the project
+	conventions := s.analyzeNamingConventions(ctx, projectID, scope)
+
+	result := map[string]any{
+		"conventions": conventions,
+		"scope":       scope,
+		"analysis":    "Based on actual code patterns in the project",
+	}
+
+	if includeSuggestions {
+		result["suggestions"] = []map[string]any{}
+	}
+
+	return &ToolResponse{
+		Content: []any{
+			map[string]any{
+				"type": "text",
+				"text": "Naming conventions analysis complete",
+			},
+			map[string]any{
+				"type": "resource",
+				"resource": map[string]any{
+					"uri":  fmt.Sprintf("/projects/%s/naming", projectID),
+					"data": result,
+				},
+			},
+		},
+	}, nil
+}
+
+// handleFindTestsForCode finds tests for code elements
+func (s *Server) handleFindTestsForCodeInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
+	projectID, ok := input["project_id"].(string)
+	if !ok {
+		return nil, fmt.Errorf("project_id is required")
+	}
+	elementType, ok := input["element_type"].(string)
+	if !ok {
+		return nil, fmt.Errorf("element_type is required")
+	}
+	name, ok := input["name"].(string)
+	if !ok {
+		return nil, fmt.Errorf("name is required")
+	}
+	packageName := ""
+	if p, ok := input["package"].(string); ok {
+		packageName = p
+	}
+
+	logger.Info("finding tests for code",
+		"project_id", projectID,
+		"type", elementType,
+		"name", name,
+		"package", packageName)
+
+	// Find test files and functions that might test this element
+	testsFound := s.findTestsForElement(ctx, projectID, elementType, name, packageName)
+
+	result := map[string]any{
+		"element":      name,
+		"tests_found":  testsFound,
+		"element_type": elementType,
+		"package":      packageName,
+		"test_count":   len(testsFound),
+	}
+
+	return &ToolResponse{
+		Content: []any{
+			map[string]any{
+				"type": "text",
+				"text": fmt.Sprintf("Test search complete for %s", name),
+			},
+			map[string]any{
+				"type": "resource",
+				"resource": map[string]any{
+					"uri":  fmt.Sprintf("/projects/%s/tests/%s", projectID, name),
+					"data": result,
+				},
+			},
+		},
+	}, nil
+}
+
+// handleCheckTestCoverage checks test coverage
+func (s *Server) handleCheckTestCoverageInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
+	projectID, ok := input["project_id"].(string)
+	if !ok {
+		return nil, fmt.Errorf("project_id is required")
+	}
+	path := ""
+	if p, ok := input["path"].(string); ok {
+		path = p
+	}
+	detailed := false
+	if d, ok := input["detailed"].(bool); ok {
+		detailed = d
+	}
+
+	logger.Info("checking test coverage",
+		"project_id", projectID,
+		"path", path,
+		"detailed", detailed)
+
+	// Analyze test coverage for the given path
+	coverage := s.analyzeTestCoverage(ctx, projectID, path)
+
+	result := map[string]any{
+		"path":            path,
+		"coverage":        coverage.Percentage,
+		"covered_lines":   coverage.CoveredLines,
+		"total_lines":     coverage.TotalLines,
+		"test_files":      coverage.TestFiles,
+		"analysis_method": "Static analysis based on test function naming patterns",
+	}
+
+	if detailed {
+		result["details"] = map[string]any{
+			"lines_covered":     0,
+			"lines_total":       0,
+			"functions_covered": 0,
+			"functions_total":   0,
+		}
+	}
+
+	return &ToolResponse{
+		Content: []any{
+			map[string]any{
+				"type": "text",
+				"text": "Test coverage analysis complete",
+			},
+			map[string]any{
+				"type": "resource",
+				"resource": map[string]any{
+					"uri":  fmt.Sprintf("/projects/%s/coverage", projectID),
+					"data": result,
+				},
+			},
+		},
+	}, nil
+}
+
+// Resource handlers (stubs for now)
+
+// handleProjectMetadataResource provides project metadata
+func (s *Server) HandleProjectMetadataResource(ctx context.Context, params map[string]string) ([]byte, error) {
+	projectID := params["project_id"]
+
+	// Get project statistics
+	stats, err := s.serviceAdapter.GetProjectStatistics(ctx, core.ID(projectID))
+	if err != nil {
+		return nil, fmt.Errorf("failed to get project statistics: %w", err)
+	}
+
+	metadata := map[string]any{
+		"project_id": projectID,
+		"timestamp":  time.Now().UTC().Format(time.RFC3339),
+		"statistics": convertStatistics(stats),
+		"version":    "1.0.0",
+	}
+
+	return json.Marshal(metadata)
+}
+
+// handleQueryTemplatesResource provides query templates
+func (s *Server) HandleQueryTemplatesResource(_ context.Context, _ map[string]string) ([]byte, error) {
+	// Return available query templates from the CommonTemplates map
+	templateList := make([]map[string]any, 0)
+	for name, template := range query.CommonTemplates {
+		templateList = append(templateList, map[string]any{
+			"name":        name,
+			"description": template.Description,
+			"category":    template.Category,
+			"parameters":  template.Parameters,
+		})
+	}
+
+	data := map[string]any{
+		"templates": templateList,
+		"categories": []string{
+			"dependency_analysis",
+			"code_structure",
+			"quality_metrics",
+			"test_coverage",
+		},
+	}
+
+	return json.Marshal(data)
+}
+
+// handleCodePatternsResource provides code patterns
+func (s *Server) HandleCodePatternsResource(_ context.Context, _ map[string]string) ([]byte, error) {
+	patterns := map[string]any{
+		"patterns": []map[string]string{
+			{
+				"id":          "singleton",
+				"name":        "Singleton Pattern",
+				"description": "Ensures a class has only one instance",
+				"category":    "creational",
+			},
+			{
+				"id":          "factory",
+				"name":        "Factory Pattern",
+				"description": "Creates objects without specifying exact classes",
+				"category":    "creational",
+			},
+			{
+				"id":          "circular_dependency",
+				"name":        "Circular Dependency",
+				"description": "Mutual dependencies between packages",
+				"category":    "anti-pattern",
+			},
+		},
+		"categories": []string{
+			"creational",
+			"structural",
+			"behavioral",
+			"anti-pattern",
+		},
+	}
+
+	return json.Marshal(patterns)
+}
+
+// handleProjectInvariantsResource provides project invariants
+func (s *Server) HandleProjectInvariantsResource(_ context.Context, params map[string]string) ([]byte, error) {
+	projectID := params["project_id"]
+
+	invariants := map[string]any{
+		"project_id": projectID,
+		"rules": []map[string]any{
+			{
+				"id":          "no_circular_deps",
+				"description": "No circular dependencies allowed",
+				"severity":    "error",
+				"enabled":     true,
+			},
+			{
+				"id":          "max_package_depth",
+				"description": "Maximum package nesting depth",
+				"severity":    "warning",
+				"value":       5,
+				"enabled":     true,
+			},
+		},
+		"updated_at": time.Now().UTC().Format(time.RFC3339),
+	}
+
+	return json.Marshal(invariants)
+}
+
+func convertStatistics(stats *graph.ProjectStatistics) map[string]any {
+	if stats == nil {
+		return map[string]any{}
+	}
+
+	return map[string]any{
+		"total_nodes":           stats.TotalNodes,
+		"total_relationships":   stats.TotalRelationships,
+		"nodes_by_type":         stats.NodesByType,
+		"relationships_by_type": stats.RelationshipsByType,
+		"top_packages":          stats.TopPackages,
+		"top_functions":         stats.TopFunctions,
+	}
+}
+
+// readFileContext reads lines around a specific line number in a file
+func (s *Server) readFileContext(filePath string, targetLine, contextLines int) (string, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to open file %s: %w", filePath, err)
+	}
+	defer file.Close()
+
+	var lines []string
+	scanner := bufio.NewScanner(file)
+	lineNum := 1
+
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+		lineNum++
+	}
+
+	if err := scanner.Err(); err != nil {
+		return "", fmt.Errorf("error reading file: %w", err)
+	}
+
+	// Calculate the range
+	startLine := targetLine - contextLines
+	endLine := targetLine + contextLines
+
+	if startLine < 1 {
+		startLine = 1
+	}
+	if endLine > len(lines) {
+		endLine = len(lines)
+	}
+
+	// Build the context with line numbers
+	var result strings.Builder
+	for i := startLine - 1; i < endLine; i++ {
+		lineMarker := "  "
+		if i+1 == targetLine {
+			lineMarker = ">>" // Mark the target line
+		}
+		result.WriteString(fmt.Sprintf("%s %4d: %s\n", lineMarker, i+1, lines[i]))
+	}
+
+	return result.String(), nil
+}
+
+// isStandardLibraryPackage checks if an import path is a Go standard library package
+func (s *Server) isStandardLibraryPackage(importPath string) bool {
+	// Common Go standard library packages
+	standardPackages := map[string]bool{
+		"fmt":     true,
+		"os":      true,
+		"io":      true,
+		"net":     true,
+		"http":    true,
+		"strings": true,
+		"strconv": true,
+		"time":    true,
+		"context": true,
+		"errors":  true,
+		"sync":    true,
+		"json":    true,
+		"log":     true,
+		"path":    true,
+		"sort":    true,
+		"bytes":   true,
+		"bufio":   true,
+		"regexp":  true,
+		"reflect": true,
+	}
+
+	// Check if it's a direct standard package
+	if standardPackages[importPath] {
+		return true
+	}
+
+	// Check if it's a subpackage of a standard package
+	standardPrefixes := []string{
+		"net/",
+		"crypto/",
+		"encoding/",
+		"go/",
+		"text/",
+		"html/",
+		"image/",
+		"archive/",
+		"compress/",
+		"container/",
+		"database/",
+		"debug/",
+		"path/",
+		"mime/",
+		"math/",
+		"os/",
+		"runtime/",
+		"testing/",
+	}
+
+	for _, prefix := range standardPrefixes {
+		if strings.HasPrefix(importPath, prefix) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// detectCommonPatterns detects common Go programming patterns
+func (s *Server) detectCommonPatterns(ctx context.Context, projectID, _ string) []map[string]any {
+	var patterns []map[string]any
+
+	// Pattern 1: Interface implementations
+	interfacePattern := s.detectInterfacePattern(ctx, projectID)
+	if interfacePattern != nil {
+		patterns = append(patterns, interfacePattern)
+	}
+
+	// Pattern 2: Factory functions
+	factoryPattern := s.detectFactoryPattern(ctx, projectID)
+	if factoryPattern != nil {
+		patterns = append(patterns, factoryPattern)
+	}
+
+	// Pattern 3: Error handling patterns
+	errorPattern := s.detectErrorPattern(ctx, projectID)
+	if errorPattern != nil {
+		patterns = append(patterns, errorPattern)
+	}
+
+	return patterns
+}
+
+// detectInterfacePattern detects interface implementation patterns
+func (s *Server) detectInterfacePattern(ctx context.Context, projectID string) map[string]any {
+	query := `
+		MATCH (i:Interface {project_id: $project_id})
+		OPTIONAL MATCH (s:Struct {project_id: $project_id})-[:IMPLEMENTS]->(i)
+		RETURN i.name as interface_name, count(s) as implementations
+		ORDER BY implementations DESC
+		LIMIT 5
+	`
+
+	results, err := s.serviceAdapter.ExecuteQuery(ctx, query, map[string]any{
+		"project_id": projectID,
+	})
+	if err != nil || len(results) == 0 {
+		return nil
+	}
+
+	return map[string]any{
+		"type":        "interface_implementation",
+		"name":        "Interface Implementation Pattern",
+		"description": "Interfaces with multiple implementations detected",
+		"examples":    results,
+		"confidence":  0.8,
+	}
+}
+
+// detectFactoryPattern detects factory function patterns
+func (s *Server) detectFactoryPattern(ctx context.Context, projectID string) map[string]any {
+	query := `
+		MATCH (f:Function {project_id: $project_id})
+		WHERE f.name STARTS WITH 'New' AND size(f.returns) > 0
+		RETURN f.name as function_name, f.package as package_name, f.returns as returns
+		LIMIT 10
+	`
+
+	results, err := s.serviceAdapter.ExecuteQuery(ctx, query, map[string]any{
+		"project_id": projectID,
+	})
+	if err != nil || len(results) == 0 {
+		return nil
+	}
+
+	return map[string]any{
+		"type":        "factory_function",
+		"name":        "Factory Function Pattern",
+		"description": "Constructor functions following 'New*' naming convention",
+		"examples":    results,
+		"confidence":  0.9,
+	}
+}
+
+// detectErrorPattern detects error handling patterns
+func (s *Server) detectErrorPattern(ctx context.Context, projectID string) map[string]any {
+	query := `
+		MATCH (f:Function {project_id: $project_id})
+		WHERE any(ret IN f.returns WHERE ret = 'error')
+		RETURN count(f) as error_returning_functions
+	`
+
+	results, err := s.serviceAdapter.ExecuteQuery(ctx, query, map[string]any{
+		"project_id": projectID,
+	})
+	if err != nil || len(results) == 0 {
+		return nil
+	}
+
+	errorCount, ok := results[0]["error_returning_functions"].(int64)
+	if !ok {
+		errorCount = 0
+	}
+	if errorCount == 0 {
+		return nil
+	}
+
+	return map[string]any{
+		"type":        "error_handling",
+		"name":        "Error Handling Pattern",
+		"description": fmt.Sprintf("Found %d functions returning errors", errorCount),
+		"examples":    results,
+		"confidence":  0.95,
+	}
+}
+
+// analyzeNamingConventions analyzes naming patterns in the codebase
+func (s *Server) analyzeNamingConventions(ctx context.Context, projectID, _ string) map[string]any {
+	conventions := make(map[string]any)
+
+	// Analyze function naming
+	functionQuery := `
+		MATCH (f:Function {project_id: $project_id})
+		WHERE f.is_exported = true
+		RETURN f.name as name
+		LIMIT 20
+	`
+
+	functionResults, err := s.serviceAdapter.ExecuteQuery(ctx, functionQuery, map[string]any{
+		"project_id": projectID,
+	})
+	if err == nil && len(functionResults) > 0 {
+		functionPatterns := s.analyzeFunctionNaming(functionResults)
+		conventions["functions"] = functionPatterns
+	}
+
+	// Analyze type naming
+	typeQuery := `
+		MATCH (s:Struct {project_id: $project_id})
+		WHERE s.is_exported = true
+		RETURN s.name as name
+		LIMIT 20
+	`
+
+	typeResults, err := s.serviceAdapter.ExecuteQuery(ctx, typeQuery, map[string]any{
+		"project_id": projectID,
+	})
+	if err == nil && len(typeResults) > 0 {
+		typePatterns := s.analyzeTypeNaming(typeResults)
+		conventions["types"] = typePatterns
+	}
+
+	// Analyze interface naming
+	interfaceQuery := `
+		MATCH (i:Interface {project_id: $project_id})
+		WHERE i.is_exported = true
+		RETURN i.name as name
+		LIMIT 20
+	`
+
+	interfaceResults, err := s.serviceAdapter.ExecuteQuery(ctx, interfaceQuery, map[string]any{
+		"project_id": projectID,
+	})
+	if err == nil && len(interfaceResults) > 0 {
+		interfacePatterns := s.analyzeInterfaceNaming(interfaceResults)
+		conventions["interfaces"] = interfacePatterns
+	}
+
+	return conventions
+}
+
+// analyzeFunctionNaming analyzes function naming patterns
+func (s *Server) analyzeFunctionNaming(results []map[string]any) map[string]any {
+	patterns := map[string]int{
+		"camelCase":       0,
+		"PascalCase":      0,
+		"snake_case":      0,
+		"starts_with_Get": 0,
+		"starts_with_Set": 0,
+		"starts_with_New": 0,
+	}
+
+	for _, result := range results {
+		name, ok := result["name"].(string)
+		if !ok || name == "" {
+			continue
+		}
+
+		// Check patterns
+		if s.isCamelCase(name) {
+			patterns["camelCase"]++
+		}
+		if s.isPascalCase(name) {
+			patterns["PascalCase"]++
+		}
+		if strings.Contains(name, "_") {
+			patterns["snake_case"]++
+		}
+		if strings.HasPrefix(name, "Get") {
+			patterns["starts_with_Get"]++
+		}
+		if strings.HasPrefix(name, "Set") {
+			patterns["starts_with_Set"]++
+		}
+		if strings.HasPrefix(name, "New") {
+			patterns["starts_with_New"]++
+		}
+	}
+
+	return map[string]any{
+		"patterns": patterns,
+		"total":    len(results),
+	}
+}
+
+// analyzeTypeNaming analyzes struct/type naming patterns
+func (s *Server) analyzeTypeNaming(results []map[string]any) map[string]any {
+	patterns := map[string]int{
+		"PascalCase": 0,
+		"camelCase":  0,
+		"UPPER_CASE": 0,
+	}
+
+	for _, result := range results {
+		name, ok := result["name"].(string)
+		if !ok || name == "" {
+			continue
+		}
+
+		switch {
+		case s.isPascalCase(name):
+			patterns["PascalCase"]++
+		case s.isCamelCase(name):
+			patterns["camelCase"]++
+		case strings.ToUpper(name) == name:
+			patterns["UPPER_CASE"]++
+		}
+	}
+
+	return map[string]any{
+		"patterns": patterns,
+		"total":    len(results),
+	}
+}
+
+// analyzeInterfaceNaming analyzes interface naming patterns
+func (s *Server) analyzeInterfaceNaming(results []map[string]any) map[string]any {
+	patterns := map[string]int{
+		"ends_with_er":   0,
+		"ends_with_able": 0,
+		"PascalCase":     0,
+	}
+
+	for _, result := range results {
+		name, ok := result["name"].(string)
+		if !ok || name == "" {
+			continue
+		}
+
+		if strings.HasSuffix(name, "er") {
+			patterns["ends_with_er"]++
+		}
+		if strings.HasSuffix(name, "able") {
+			patterns["ends_with_able"]++
+		}
+		if s.isPascalCase(name) {
+			patterns["PascalCase"]++
+		}
+	}
+
+	return map[string]any{
+		"patterns": patterns,
+		"total":    len(results),
+	}
+}
+
+// isCamelCase checks if a string is in camelCase
+func (s *Server) isCamelCase(str string) bool {
+	if str == "" {
+		return false
+	}
+	return str[0] >= 'a' && str[0] <= 'z' && !strings.Contains(str, "_")
+}
+
+// isPascalCase checks if a string is in PascalCase
+func (s *Server) isPascalCase(str string) bool {
+	if str == "" {
+		return false
+	}
+	return str[0] >= 'A' && str[0] <= 'Z' && !strings.Contains(str, "_")
+}
+
+// findTestsForElement finds test functions that might test a specific element
+func (s *Server) findTestsForElement(
+	ctx context.Context,
+	projectID, _, name, _ string,
+) []map[string]any {
+	// Find test functions that contain the element name
+	query := `
+		MATCH (f:Function {project_id: $project_id})
+		WHERE f.name CONTAINS 'Test' AND (
+			f.name CONTAINS $name OR
+			f.name =~ ('.*' + $name + '.*') OR
+			f.name =~ ('Test.*' + $name + '.*')
+		)
+		OPTIONAL MATCH (file:File)-[:CONTAINS]->(f)
+		RETURN f.name as test_name, f.package as test_package, file.path as file_path
+		LIMIT 10
+	`
+
+	results, err := s.serviceAdapter.ExecuteQuery(ctx, query, map[string]any{
+		"project_id": projectID,
+		"name":       name,
+	})
+	if err != nil {
+		return []map[string]any{}
+	}
+
+	var tests []map[string]any
+	for _, result := range results {
+		testName, ok := result["test_name"].(string)
+		if !ok {
+			continue
+		}
+		testPackage, ok := result["test_package"].(string)
+		if !ok {
+			testPackage = ""
+		}
+		filePath, ok := result["file_path"].(string)
+		if !ok {
+			filePath = ""
+		}
+
+		tests = append(tests, map[string]any{
+			"test_name":    testName,
+			"test_package": testPackage,
+			"file_path":    filePath,
+			"match_type":   "name_pattern",
+		})
+	}
+
+	return tests
+}
+
+// TestCoverage represents test coverage information
+type TestCoverage struct {
+	Percentage   float64          `json:"percentage"`
+	CoveredLines int              `json:"covered_lines"`
+	TotalLines   int              `json:"total_lines"`
+	TestFiles    []map[string]any `json:"test_files"`
+}
+
+// analyzeTestCoverage analyzes test coverage for a given path
+func (s *Server) analyzeTestCoverage(ctx context.Context, projectID, path string) TestCoverage {
+	// Find functions in the target path
+	functionsQuery := `
+		MATCH (f:Function {project_id: $project_id})
+		OPTIONAL MATCH (file:File)-[:CONTAINS]->(f)
+		WHERE file.path CONTAINS $path OR f.package CONTAINS $path
+		RETURN count(f) as total_functions
+	`
+
+	functionResults, err := s.serviceAdapter.ExecuteQuery(ctx, functionsQuery, map[string]any{
+		"project_id": projectID,
+		"path":       path,
+	})
+	if err != nil {
+		return TestCoverage{}
+	}
+
+	totalFunctions := int64(0)
+	if len(functionResults) > 0 {
+		if val, ok := functionResults[0]["total_functions"].(int64); ok {
+			totalFunctions = val
+		}
+	}
+
+	// Find test functions that might cover this path
+	testQuery := `
+		MATCH (f:Function {project_id: $project_id})
+		WHERE f.name CONTAINS 'Test'
+		OPTIONAL MATCH (file:File)-[:CONTAINS]->(f)
+		WHERE file.path CONTAINS 'test' OR file.path CONTAINS '_test'
+		RETURN count(f) as test_functions, collect(DISTINCT file.path) as test_files
+	`
+
+	testResults, err := s.serviceAdapter.ExecuteQuery(ctx, testQuery, map[string]any{
+		"project_id": projectID,
+	})
+	if err != nil {
+		return TestCoverage{}
+	}
+
+	testFunctions := int64(0)
+	var testFiles []string
+	if len(testResults) > 0 {
+		if val, ok := testResults[0]["test_functions"].(int64); ok {
+			testFunctions = val
+		}
+		if tf, ok := testResults[0]["test_files"].([]any); ok {
+			for _, file := range tf {
+				if filePath, ok := file.(string); ok {
+					testFiles = append(testFiles, filePath)
+				}
+			}
+		}
+	}
+
+	// Simple coverage estimation based on test to function ratio
+	coveragePercentage := 0.0
+	if totalFunctions > 0 {
+		// Very basic heuristic: assume each test covers 1-2 functions
+		estimatedCoverage := float64(testFunctions) * 1.5 / float64(totalFunctions)
+		if estimatedCoverage > 1.0 {
+			estimatedCoverage = 1.0
+		}
+		coveragePercentage = estimatedCoverage * 100.0
+	}
+
+	// Convert test files to structured format
+	var testFileStructs []map[string]any
+	for _, file := range testFiles {
+		testFileStructs = append(testFileStructs, map[string]any{
+			"path": file,
+			"type": "test_file",
+		})
+	}
+
+	return TestCoverage{
+		Percentage:   coveragePercentage,
+		CoveredLines: int(testFunctions), // Approximate
+		TotalLines:   int(totalFunctions),
+		TestFiles:    testFileStructs,
+	}
+}
