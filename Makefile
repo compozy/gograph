@@ -20,7 +20,7 @@ GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 VERSION := $(shell git describe --tags --always 2>/dev/null || echo "unknown")
 
 # Build flags for injecting version info
-LDFLAGS := "-X 'main.Version=$(VERSION)' -X 'main.CommitHash=$(GIT_COMMIT)'"
+LDFLAGS := -X 'main.Version=$(VERSION)' -X 'main.CommitHash=$(GIT_COMMIT)'
 
 .PHONY: all test lint fmt clean build deps help
 .PHONY: tidy run-neo4j stop-neo4j clean-neo4j
@@ -71,32 +71,59 @@ deps:
 # -----------------------------------------------------------------------------
 
 test: test-up
-	gotestsum --format pkgname -- -race -parallel=8 ./...
+	gotestsum --format pkgname -- -race -parallel=4 ./...
 
 test-nocache: test-up
-	gotestsum --format pkgname -- -race -count=1 -parallel=8 ./...
+	gotestsum --format pkgname -- -race -count=1 -parallel=4 ./...
 
 # Start test dependencies (Neo4j)
 test-up:
 	@echo "Starting test dependencies..."
+ifeq ($(CI),true)
+	@echo "CI environment detected - Neo4j service should already be running"
+	@echo "Checking Neo4j connectivity..."
+	@for i in $$(seq 1 15); do \
+		if curl -f http://localhost:7474 >/dev/null 2>&1 || wget -q --spider http://localhost:7474 >/dev/null 2>&1; then \
+			echo "Neo4j is ready"; \
+			break; \
+		else \
+			echo "Waiting for Neo4j... (attempt $$i/15)"; \
+			sleep 2; \
+		fi; \
+	done
+else
+	@command -v docker-compose >/dev/null 2>&1 || { echo >&2 "docker-compose is required but not installed. Aborting."; exit 1; }
 	@docker-compose -f docker-compose.test.yml up -d
 	@echo "Waiting for Neo4j to be ready..."
 	@docker-compose -f docker-compose.test.yml exec -T neo4j-test wget -q --spider --tries=30 --waitretry=2 http://localhost:7474 || true
+endif
 	@echo "Test dependencies ready"
 
 # Stop test dependencies
 test-down:
 	@echo "Stopping test dependencies..."
+ifeq ($(CI),true)
+	@echo "CI environment detected - skipping docker-compose down"
+else
 	@docker-compose -f docker-compose.test.yml down
+endif
 
 # Clean test dependencies (including volumes)
 test-clean:
 	@echo "Cleaning test dependencies..."
+ifeq ($(CI),true)
+	@echo "CI environment detected - skipping docker-compose cleanup"
+else
 	@docker-compose -f docker-compose.test.yml down -v
+endif
 
 # Show test logs
 test-logs:
+ifeq ($(CI),true)
+	@echo "CI environment detected - use GitHub Actions logs"
+else
 	@docker-compose -f docker-compose.test.yml logs -f
+endif
 
 # -----------------------------------------------------------------------------
 # Neo4j Management
@@ -156,9 +183,15 @@ reset-db: stop-neo4j clean-neo4j run-neo4j
 test-integration: test-up
 	gotestsum --format pkgname -- -race -tags=integration ./test/integration/...
 
-test-coverage:
+test-coverage: test-up
 	@echo "Running tests with coverage..."
-	$(GOCMD) test -race -coverprofile=coverage.out -covermode=atomic ./...
+ifeq ($(CI),true)
+	@echo "Building binary in CI environment..."
+	@mkdir -p $(BINARY_DIR)
+	@$(GOBUILD) -ldflags "$(LDFLAGS)" -o $(BINARY_DIR)/$(BINARY_NAME) cmd/gograph/main.go
+	@chmod +x $(BINARY_DIR)/$(BINARY_NAME)
+endif
+	gotestsum --format pkgname -- -race -parallel=4 -coverprofile=coverage.out -covermode=atomic ./...
 	$(GOCMD) tool cover -html=coverage.out -o coverage.html
 	@echo "Coverage report generated: coverage.html"
 
@@ -197,7 +230,13 @@ ci-deps:
 	$(GOCMD) install golang.org/x/vuln/cmd/govulncheck@latest
 	$(GOCMD) install github.com/securego/gosec/v2/cmd/gosec@latest
 
-ci-test: test-up test test-integration test-down
+# CI-specific test target that handles Neo4j service properly
+ci-test: test-up
+	@echo "Building binary for tests..."
+	@mkdir -p $(BINARY_DIR)
+	@$(GOBUILD) -ldflags "$(LDFLAGS)" -o $(BINARY_DIR)/$(BINARY_NAME) cmd/gograph/main.go
+	@chmod +x $(BINARY_DIR)/$(BINARY_NAME)
+	gotestsum --format pkgname -- -race -parallel=4 ./...
 
 ci-lint: lint
 

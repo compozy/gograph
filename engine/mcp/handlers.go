@@ -31,7 +31,7 @@ func (s *Server) HandleAnalyzeProjectInternal(ctx context.Context, input map[str
 	}
 
 	// Validate path is allowed
-	if !s.isPathAllowed(projectPath) {
+	if !s.IsPathAllowed(projectPath) {
 		return nil, fmt.Errorf("path %s is not allowed by security policy", projectPath)
 	}
 
@@ -81,7 +81,7 @@ func (s *Server) HandleAnalyzeProjectInternal(ctx context.Context, input map[str
 		"nodes_created":  len(projectGraph.Nodes),
 		"relationships":  len(projectGraph.Relationships),
 		"files_analyzed": len(parseResult.Files),
-		"statistics":     convertStatistics(stats),
+		"statistics":     ConvertStatistics(stats),
 	}
 
 	response := &ToolResponse{
@@ -250,7 +250,7 @@ func (s *Server) HandleGetFunctionInfoInternal(ctx context.Context, input map[st
 	}
 
 	// Include function calls and callers if requested
-	s.addFunctionRelationships(ctx, result, params, includeCalls, includeCallers)
+	s.AddFunctionRelationships(ctx, result, params, includeCalls, includeCallers)
 
 	return &ToolResponse{
 		Content: []any{
@@ -269,8 +269,8 @@ func (s *Server) HandleGetFunctionInfoInternal(ctx context.Context, input map[st
 	}, nil
 }
 
-// addFunctionRelationships adds calls and callers to function result
-func (s *Server) addFunctionRelationships(
+// AddFunctionRelationships adds calls and callers to function result
+func (s *Server) AddFunctionRelationships(
 	ctx context.Context,
 	result map[string]any,
 	params map[string]any,
@@ -306,7 +306,7 @@ func (s *Server) addFunctionRelationships(
 // handleQueryDependencies finds dependencies for a package or function
 //
 //nolint:funlen // MCP tool handlers can be longer for comprehensive functionality
-func (s *Server) handleQueryDependenciesInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
+func (s *Server) HandleQueryDependenciesInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
 	projectID, ok := input["project_id"].(string)
 	if !ok {
 		return nil, fmt.Errorf("project_id is required")
@@ -422,7 +422,7 @@ func (s *Server) handleQueryDependenciesInternal(ctx context.Context, input map[
 
 // Helper methods
 
-func (s *Server) isPathAllowed(path string) bool {
+func (s *Server) IsPathAllowed(path string) bool {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return false
@@ -452,7 +452,7 @@ func (s *Server) isPathAllowed(path string) bool {
 // handleFindImplementations finds all implementations of an interface
 //
 //nolint:funlen // MCP tool handlers can be longer for comprehensive functionality
-func (s *Server) handleFindImplementationsInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
+func (s *Server) HandleFindImplementationsInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
 	projectID, ok := input["project_id"].(string)
 	if !ok {
 		return nil, fmt.Errorf("project_id is required")
@@ -539,7 +539,7 @@ func (s *Server) handleFindImplementationsInternal(ctx context.Context, input ma
 }
 
 // handleTraceCallChain traces call chains between functions
-func (s *Server) handleTraceCallChainInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
+func (s *Server) HandleTraceCallChainInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
 	projectID, ok := input["project_id"].(string)
 	if !ok {
 		return nil, fmt.Errorf("project_id is required")
@@ -622,7 +622,7 @@ func (s *Server) handleTraceCallChainInternal(ctx context.Context, input map[str
 }
 
 // handleDetectCircularDeps detects circular dependencies
-func (s *Server) handleDetectCircularDepsInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
+func (s *Server) HandleDetectCircularDepsInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
 	projectID, ok := input["project_id"].(string)
 	if !ok {
 		return nil, fmt.Errorf("project_id is required")
@@ -685,7 +685,7 @@ func (s *Server) handleDetectCircularDepsInternal(ctx context.Context, input map
 }
 
 // handleListPackages lists all packages in the project
-func (s *Server) handleListPackagesInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
+func (s *Server) HandleListPackagesInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
 	projectID, ok := input["project_id"].(string)
 	if !ok {
 		return nil, fmt.Errorf("project_id is required")
@@ -750,7 +750,7 @@ func (s *Server) handleListPackagesInternal(ctx context.Context, input map[strin
 // handleGetPackageStructure gets detailed structure of a package
 //
 //nolint:funlen // MCP tool handlers can be longer for comprehensive functionality
-func (s *Server) handleGetPackageStructureInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
+func (s *Server) HandleGetPackageStructureInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
 	projectID, ok := input["project_id"].(string)
 	if !ok {
 		return nil, fmt.Errorf("project_id is required")
@@ -823,9 +823,9 @@ func (s *Server) handleGetPackageStructureInternal(ctx context.Context, input ma
 
 	// Filter out private elements if not requested
 	if !includePrivate {
-		functions = filterExported(functions)
-		structs = filterExported(structs)
-		interfaces = filterExported(interfaces)
+		functions = FilterExported(functions)
+		structs = FilterExported(structs)
+		interfaces = FilterExported(interfaces)
 	}
 
 	result := map[string]any{
@@ -855,7 +855,7 @@ func (s *Server) handleGetPackageStructureInternal(ctx context.Context, input ma
 }
 
 // handleNaturalLanguageQuery converts natural language to Cypher and executes
-func (s *Server) handleNaturalLanguageQueryInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
+func (s *Server) HandleNaturalLanguageQueryInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
 	projectID, ok := input["project_id"].(string)
 	if !ok {
 		return nil, fmt.Errorf("project_id is required")
@@ -883,18 +883,18 @@ func (s *Server) handleNaturalLanguageQueryInternal(ctx context.Context, input m
 		schema, schemaErr := s.llmService.GetSchema(ctx, projectID)
 		if schemaErr != nil {
 			logger.Warn("Failed to get schema, using fallback", "error", schemaErr)
-			cypherQuery = generateFallbackCypher(query, projectID)
+			cypherQuery = GenerateFallbackCypher(query, projectID)
 		} else {
 			result, err := s.llmService.Translate(ctx, query, schema)
 			if err != nil {
 				logger.Warn("Failed to translate query with LLM, using fallback", "error", err)
-				cypherQuery = generateFallbackCypher(query, projectID)
+				cypherQuery = GenerateFallbackCypher(query, projectID)
 			} else {
 				cypherQuery = result.Query
 			}
 		}
 	} else {
-		cypherQuery = generateFallbackCypher(query, projectID)
+		cypherQuery = GenerateFallbackCypher(query, projectID)
 	}
 
 	// Execute the generated Cypher query
@@ -1044,7 +1044,7 @@ func (s *Server) HandleVerifyCodeExistsInternal(ctx context.Context, input map[s
 
 // Helper methods and conversion functions
 
-func filterExported(items []any) []any {
+func FilterExported(items []any) []any {
 	var filtered []any
 	for _, item := range items {
 		if itemMap, ok := item.(map[string]any); ok {
@@ -1056,7 +1056,7 @@ func filterExported(items []any) []any {
 	return filtered
 }
 
-func generateFallbackCypher(naturalQuery, projectID string) string {
+func GenerateFallbackCypher(naturalQuery, projectID string) string {
 	// Simple fallback query generation based on keywords
 	query := strings.ToLower(naturalQuery)
 
@@ -1083,14 +1083,14 @@ func generateFallbackCypher(naturalQuery, projectID string) string {
 // Remaining stub handlers - These will be implemented in Phase 2
 
 // handleGetCodeContext gets context around a code element
-func (s *Server) handleGetCodeContextInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
-	projectID, elementType, name, contextLines, err := s.parseCodeContextInput(input)
+func (s *Server) HandleGetCodeContextInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
+	projectID, elementType, name, contextLines, err := s.ParseCodeContextInput(input)
 	if err != nil {
 		return nil, err
 	}
 
 	// Get the element's location from the graph
-	query, err := s.buildElementLocationQuery(elementType)
+	query, err := s.BuildElementLocationQuery(elementType)
 	if err != nil {
 		return nil, err
 	}
@@ -1103,11 +1103,11 @@ func (s *Server) handleGetCodeContextInternal(ctx context.Context, input map[str
 		return nil, fmt.Errorf("failed to query element location: %w", err)
 	}
 
-	return s.extractCodeContextFromResults(results, projectID, elementType, name, contextLines)
+	return s.ExtractCodeContextFromResults(results, projectID, elementType, name, contextLines)
 }
 
-// buildElementLocationQuery builds a query to find an element's location
-func (s *Server) buildElementLocationQuery(elementType string) (string, error) {
+// BuildElementLocationQuery builds a query to find an element's location
+func (s *Server) BuildElementLocationQuery(elementType string) (string, error) {
 	switch elementType {
 	case "function":
 		return `
@@ -1136,8 +1136,8 @@ func (s *Server) buildElementLocationQuery(elementType string) (string, error) {
 }
 
 // codeContextParams holds parameters for code context requests
-// parseCodeContextInput parses and validates input for code context requests
-func (s *Server) parseCodeContextInput(
+// ParseCodeContextInput parses and validates input for code context requests
+func (s *Server) ParseCodeContextInput(
 	input map[string]any,
 ) (projectID, elementType, name string, contextLines int, err error) {
 	projectID, ok := input["project_id"].(string)
@@ -1166,8 +1166,8 @@ func (s *Server) parseCodeContextInput(
 	return projectID, elementType, name, contextLines, nil
 }
 
-// extractCodeContextFromResults processes query results and extracts code context
-func (s *Server) extractCodeContextFromResults(
+// ExtractCodeContextFromResults processes query results and extracts code context
+func (s *Server) ExtractCodeContextFromResults(
 	results []map[string]any,
 	projectID, elementType, name string,
 	contextLines int,
@@ -1212,7 +1212,7 @@ func (s *Server) extractCodeContextFromResults(
 	}
 
 	// Read the file and extract context
-	contextCode, err := s.readFileContext(filePath, int(lineStart), contextLines)
+	contextCode, err := s.ReadFileContext(filePath, int(lineStart), contextLines)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read file context: %w", err)
 	}
@@ -1237,7 +1237,7 @@ func (s *Server) extractCodeContextFromResults(
 }
 
 // handleValidateImportPath validates an import path
-func (s *Server) handleValidateImportPathInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
+func (s *Server) HandleValidateImportPathInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
 	projectID, ok := input["project_id"].(string)
 	if !ok {
 		return nil, fmt.Errorf("project_id is required")
@@ -1291,7 +1291,7 @@ func (s *Server) handleValidateImportPathInternal(ctx context.Context, input map
 		}
 	} else {
 		// Check if it's a standard library package
-		isValid = s.isStandardLibraryPackage(importPath)
+		isValid = s.IsStandardLibraryPackage(importPath)
 		resolvedPath = importPath
 		packageName = importPath
 	}
@@ -1302,8 +1302,8 @@ func (s *Server) handleValidateImportPathInternal(ctx context.Context, input map
 		"resolved_to":  resolvedPath,
 		"package_name": packageName,
 		"from_package": fromPackage,
-		"is_standard":  s.isStandardLibraryPackage(importPath),
-		"is_external":  !isValid && !s.isStandardLibraryPackage(importPath),
+		"is_standard":  s.IsStandardLibraryPackage(importPath),
+		"is_external":  !isValid && !s.IsStandardLibraryPackage(importPath),
 	}
 
 	return &ToolResponse{
@@ -1324,7 +1324,7 @@ func (s *Server) handleValidateImportPathInternal(ctx context.Context, input map
 }
 
 // handleDetectCodePatterns detects code patterns
-func (s *Server) handleDetectCodePatternsInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
+func (s *Server) HandleDetectCodePatternsInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
 	projectID, ok := input["project_id"].(string)
 	if !ok {
 		return nil, fmt.Errorf("project_id is required")
@@ -1339,7 +1339,7 @@ func (s *Server) handleDetectCodePatternsInternal(ctx context.Context, input map
 	logger.Info("detecting code patterns",
 		"project_id", projectID, "scope", scope)
 	// Detect common Go patterns in the codebase
-	patternsFound := s.detectCommonPatterns(ctx, projectID, scope)
+	patternsFound := s.DetectCommonPatterns(ctx, projectID, scope)
 
 	result := map[string]any{
 		"patterns_found": patternsFound,
@@ -1365,7 +1365,7 @@ func (s *Server) handleDetectCodePatternsInternal(ctx context.Context, input map
 }
 
 // handleGetNamingConventions analyzes naming conventions
-func (s *Server) handleGetNamingConventionsInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
+func (s *Server) HandleGetNamingConventionsInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
 	projectID, ok := input["project_id"].(string)
 	if !ok {
 		return nil, fmt.Errorf("project_id is required")
@@ -1385,7 +1385,7 @@ func (s *Server) handleGetNamingConventionsInternal(ctx context.Context, input m
 		"include_suggestions", includeSuggestions)
 
 	// Analyze naming conventions in the project
-	conventions := s.analyzeNamingConventions(ctx, projectID, scope)
+	conventions := s.AnalyzeNamingConventions(ctx, projectID, scope)
 
 	result := map[string]any{
 		"conventions": conventions,
@@ -1415,7 +1415,7 @@ func (s *Server) handleGetNamingConventionsInternal(ctx context.Context, input m
 }
 
 // handleFindTestsForCode finds tests for code elements
-func (s *Server) handleFindTestsForCodeInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
+func (s *Server) HandleFindTestsForCodeInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
 	projectID, ok := input["project_id"].(string)
 	if !ok {
 		return nil, fmt.Errorf("project_id is required")
@@ -1440,7 +1440,7 @@ func (s *Server) handleFindTestsForCodeInternal(ctx context.Context, input map[s
 		"package", packageName)
 
 	// Find test files and functions that might test this element
-	testsFound := s.findTestsForElement(ctx, projectID, elementType, name, packageName)
+	testsFound := s.FindTestsForElement(ctx, projectID, elementType, name, packageName)
 
 	result := map[string]any{
 		"element":      name,
@@ -1468,7 +1468,7 @@ func (s *Server) handleFindTestsForCodeInternal(ctx context.Context, input map[s
 }
 
 // handleCheckTestCoverage checks test coverage
-func (s *Server) handleCheckTestCoverageInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
+func (s *Server) HandleCheckTestCoverageInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
 	projectID, ok := input["project_id"].(string)
 	if !ok {
 		return nil, fmt.Errorf("project_id is required")
@@ -1488,7 +1488,7 @@ func (s *Server) handleCheckTestCoverageInternal(ctx context.Context, input map[
 		"detailed", detailed)
 
 	// Analyze test coverage for the given path
-	coverage := s.analyzeTestCoverage(ctx, projectID, path)
+	coverage := s.AnalyzeTestCoverage(ctx, projectID, path)
 
 	result := map[string]any{
 		"path":            path,
@@ -1540,7 +1540,7 @@ func (s *Server) HandleProjectMetadataResource(ctx context.Context, params map[s
 	metadata := map[string]any{
 		"project_id": projectID,
 		"timestamp":  time.Now().UTC().Format(time.RFC3339),
-		"statistics": convertStatistics(stats),
+		"statistics": ConvertStatistics(stats),
 		"version":    "1.0.0",
 	}
 
@@ -1634,7 +1634,7 @@ func (s *Server) HandleProjectInvariantsResource(_ context.Context, params map[s
 	return json.Marshal(invariants)
 }
 
-func convertStatistics(stats *graph.ProjectStatistics) map[string]any {
+func ConvertStatistics(stats *graph.ProjectStatistics) map[string]any {
 	if stats == nil {
 		return map[string]any{}
 	}
@@ -1649,8 +1649,8 @@ func convertStatistics(stats *graph.ProjectStatistics) map[string]any {
 	}
 }
 
-// readFileContext reads lines around a specific line number in a file
-func (s *Server) readFileContext(filePath string, targetLine, contextLines int) (string, error) {
+// ReadFileContext reads lines around a specific line number in a file
+func (s *Server) ReadFileContext(filePath string, targetLine, contextLines int) (string, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return "", fmt.Errorf("failed to open file %s: %w", filePath, err)
@@ -1694,8 +1694,8 @@ func (s *Server) readFileContext(filePath string, targetLine, contextLines int) 
 	return result.String(), nil
 }
 
-// isStandardLibraryPackage checks if an import path is a Go standard library package
-func (s *Server) isStandardLibraryPackage(importPath string) bool {
+// IsStandardLibraryPackage checks if an import path is a Go standard library package
+func (s *Server) IsStandardLibraryPackage(importPath string) bool {
 	// Common Go standard library packages
 	standardPackages := map[string]bool{
 		"fmt":     true,
@@ -1755,24 +1755,24 @@ func (s *Server) isStandardLibraryPackage(importPath string) bool {
 	return false
 }
 
-// detectCommonPatterns detects common Go programming patterns
-func (s *Server) detectCommonPatterns(ctx context.Context, projectID, _ string) []map[string]any {
+// DetectCommonPatterns detects common Go programming patterns
+func (s *Server) DetectCommonPatterns(ctx context.Context, projectID, _ string) []map[string]any {
 	var patterns []map[string]any
 
 	// Pattern 1: Interface implementations
-	interfacePattern := s.detectInterfacePattern(ctx, projectID)
+	interfacePattern := s.DetectInterfacePattern(ctx, projectID)
 	if interfacePattern != nil {
 		patterns = append(patterns, interfacePattern)
 	}
 
 	// Pattern 2: Factory functions
-	factoryPattern := s.detectFactoryPattern(ctx, projectID)
+	factoryPattern := s.DetectFactoryPattern(ctx, projectID)
 	if factoryPattern != nil {
 		patterns = append(patterns, factoryPattern)
 	}
 
 	// Pattern 3: Error handling patterns
-	errorPattern := s.detectErrorPattern(ctx, projectID)
+	errorPattern := s.DetectErrorPattern(ctx, projectID)
 	if errorPattern != nil {
 		patterns = append(patterns, errorPattern)
 	}
@@ -1780,8 +1780,8 @@ func (s *Server) detectCommonPatterns(ctx context.Context, projectID, _ string) 
 	return patterns
 }
 
-// detectInterfacePattern detects interface implementation patterns
-func (s *Server) detectInterfacePattern(ctx context.Context, projectID string) map[string]any {
+// DetectInterfacePattern detects interface implementation patterns
+func (s *Server) DetectInterfacePattern(ctx context.Context, projectID string) map[string]any {
 	query := `
 		MATCH (i:Interface {project_id: $project_id})
 		OPTIONAL MATCH (s:Struct {project_id: $project_id})-[:IMPLEMENTS]->(i)
@@ -1806,8 +1806,8 @@ func (s *Server) detectInterfacePattern(ctx context.Context, projectID string) m
 	}
 }
 
-// detectFactoryPattern detects factory function patterns
-func (s *Server) detectFactoryPattern(ctx context.Context, projectID string) map[string]any {
+// DetectFactoryPattern detects factory function patterns
+func (s *Server) DetectFactoryPattern(ctx context.Context, projectID string) map[string]any {
 	query := `
 		MATCH (f:Function {project_id: $project_id})
 		WHERE f.name STARTS WITH 'New' AND size(f.returns) > 0
@@ -1831,8 +1831,8 @@ func (s *Server) detectFactoryPattern(ctx context.Context, projectID string) map
 	}
 }
 
-// detectErrorPattern detects error handling patterns
-func (s *Server) detectErrorPattern(ctx context.Context, projectID string) map[string]any {
+// DetectErrorPattern detects error handling patterns
+func (s *Server) DetectErrorPattern(ctx context.Context, projectID string) map[string]any {
 	query := `
 		MATCH (f:Function {project_id: $project_id})
 		WHERE any(ret IN f.returns WHERE ret = 'error')
@@ -1863,8 +1863,8 @@ func (s *Server) detectErrorPattern(ctx context.Context, projectID string) map[s
 	}
 }
 
-// analyzeNamingConventions analyzes naming patterns in the codebase
-func (s *Server) analyzeNamingConventions(ctx context.Context, projectID, _ string) map[string]any {
+// AnalyzeNamingConventions analyzes naming patterns in the codebase
+func (s *Server) AnalyzeNamingConventions(ctx context.Context, projectID, _ string) map[string]any {
 	conventions := make(map[string]any)
 
 	// Analyze function naming
@@ -1879,7 +1879,7 @@ func (s *Server) analyzeNamingConventions(ctx context.Context, projectID, _ stri
 		"project_id": projectID,
 	})
 	if err == nil && len(functionResults) > 0 {
-		functionPatterns := s.analyzeFunctionNaming(functionResults)
+		functionPatterns := s.AnalyzeFunctionNaming(functionResults)
 		conventions["functions"] = functionPatterns
 	}
 
@@ -1895,7 +1895,7 @@ func (s *Server) analyzeNamingConventions(ctx context.Context, projectID, _ stri
 		"project_id": projectID,
 	})
 	if err == nil && len(typeResults) > 0 {
-		typePatterns := s.analyzeTypeNaming(typeResults)
+		typePatterns := s.AnalyzeTypeNaming(typeResults)
 		conventions["types"] = typePatterns
 	}
 
@@ -1911,15 +1911,15 @@ func (s *Server) analyzeNamingConventions(ctx context.Context, projectID, _ stri
 		"project_id": projectID,
 	})
 	if err == nil && len(interfaceResults) > 0 {
-		interfacePatterns := s.analyzeInterfaceNaming(interfaceResults)
+		interfacePatterns := s.AnalyzeInterfaceNaming(interfaceResults)
 		conventions["interfaces"] = interfacePatterns
 	}
 
 	return conventions
 }
 
-// analyzeFunctionNaming analyzes function naming patterns
-func (s *Server) analyzeFunctionNaming(results []map[string]any) map[string]any {
+// AnalyzeFunctionNaming analyzes function naming patterns
+func (s *Server) AnalyzeFunctionNaming(results []map[string]any) map[string]any {
 	patterns := map[string]int{
 		"camelCase":       0,
 		"PascalCase":      0,
@@ -1936,10 +1936,10 @@ func (s *Server) analyzeFunctionNaming(results []map[string]any) map[string]any 
 		}
 
 		// Check patterns
-		if s.isCamelCase(name) {
+		if s.IsCamelCase(name) {
 			patterns["camelCase"]++
 		}
-		if s.isPascalCase(name) {
+		if s.IsPascalCase(name) {
 			patterns["PascalCase"]++
 		}
 		if strings.Contains(name, "_") {
@@ -1962,8 +1962,8 @@ func (s *Server) analyzeFunctionNaming(results []map[string]any) map[string]any 
 	}
 }
 
-// analyzeTypeNaming analyzes struct/type naming patterns
-func (s *Server) analyzeTypeNaming(results []map[string]any) map[string]any {
+// AnalyzeTypeNaming analyzes struct/type naming patterns
+func (s *Server) AnalyzeTypeNaming(results []map[string]any) map[string]any {
 	patterns := map[string]int{
 		"PascalCase": 0,
 		"camelCase":  0,
@@ -1977,9 +1977,9 @@ func (s *Server) analyzeTypeNaming(results []map[string]any) map[string]any {
 		}
 
 		switch {
-		case s.isPascalCase(name):
+		case s.IsPascalCase(name):
 			patterns["PascalCase"]++
-		case s.isCamelCase(name):
+		case s.IsCamelCase(name):
 			patterns["camelCase"]++
 		case strings.ToUpper(name) == name:
 			patterns["UPPER_CASE"]++
@@ -1992,8 +1992,8 @@ func (s *Server) analyzeTypeNaming(results []map[string]any) map[string]any {
 	}
 }
 
-// analyzeInterfaceNaming analyzes interface naming patterns
-func (s *Server) analyzeInterfaceNaming(results []map[string]any) map[string]any {
+// AnalyzeInterfaceNaming analyzes interface naming patterns
+func (s *Server) AnalyzeInterfaceNaming(results []map[string]any) map[string]any {
 	patterns := map[string]int{
 		"ends_with_er":   0,
 		"ends_with_able": 0,
@@ -2012,7 +2012,7 @@ func (s *Server) analyzeInterfaceNaming(results []map[string]any) map[string]any
 		if strings.HasSuffix(name, "able") {
 			patterns["ends_with_able"]++
 		}
-		if s.isPascalCase(name) {
+		if s.IsPascalCase(name) {
 			patterns["PascalCase"]++
 		}
 	}
@@ -2023,24 +2023,24 @@ func (s *Server) analyzeInterfaceNaming(results []map[string]any) map[string]any
 	}
 }
 
-// isCamelCase checks if a string is in camelCase
-func (s *Server) isCamelCase(str string) bool {
+// IsCamelCase checks if a string is in camelCase
+func (s *Server) IsCamelCase(str string) bool {
 	if str == "" {
 		return false
 	}
 	return str[0] >= 'a' && str[0] <= 'z' && !strings.Contains(str, "_")
 }
 
-// isPascalCase checks if a string is in PascalCase
-func (s *Server) isPascalCase(str string) bool {
+// IsPascalCase checks if a string is in PascalCase
+func (s *Server) IsPascalCase(str string) bool {
 	if str == "" {
 		return false
 	}
 	return str[0] >= 'A' && str[0] <= 'Z' && !strings.Contains(str, "_")
 }
 
-// findTestsForElement finds test functions that might test a specific element
-func (s *Server) findTestsForElement(
+// FindTestsForElement finds test functions that might test a specific element
+func (s *Server) FindTestsForElement(
 	ctx context.Context,
 	projectID, _, name, _ string,
 ) []map[string]any {
@@ -2099,8 +2099,8 @@ type TestCoverage struct {
 	TestFiles    []map[string]any `json:"test_files"`
 }
 
-// analyzeTestCoverage analyzes test coverage for a given path
-func (s *Server) analyzeTestCoverage(ctx context.Context, projectID, path string) TestCoverage {
+// AnalyzeTestCoverage analyzes test coverage for a given path
+func (s *Server) AnalyzeTestCoverage(ctx context.Context, projectID, path string) TestCoverage {
 	// Find functions in the target path
 	functionsQuery := `
 		MATCH (f:Function {project_id: $project_id})

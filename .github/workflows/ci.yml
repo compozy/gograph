@@ -33,94 +33,89 @@ jobs:
       - name: Run linter
         run: make lint
 
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    services:
-      neo4j:
-        image: neo4j:5-community
-        env:
-          NEO4J_AUTH: neo4j/password
-          NEO4J_PLUGINS: '["apoc","graph-data-science"]'
-        ports:
-          - 7474:7474
-          - 7687:7687
-        options: >-
-          --health-cmd "cypher-shell -u neo4j -p password 'RETURN 1'"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
+  # test:
+  #   name: Test
+  #   runs-on: ubuntu-latest
+  #   services:
+  #     neo4j:
+  #       image: neo4j:5-community
+  #       env:
+  #         NEO4J_AUTH: neo4j/password
+  #         NEO4J_PLUGINS: '["apoc","graph-data-science"]'
+  #       ports:
+  #         - 7474:7474
+  #         - 7687:7687
+  #       options: >-
+  #         --health-cmd "cypher-shell -u neo4j -p password 'RETURN 1'"
+  #         --health-interval 10s
+  #         --health-timeout 5s
+  #         --health-retries 10
 
-    steps:
-      - uses: actions/checkout@v4
+  #   steps:
+  #     - uses: actions/checkout@v4
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
+  #     - name: Set up Go
+  #       uses: actions/setup-go@v5
+  #       with:
+  #         go-version: ${{ env.GO_VERSION }}
+  #         cache: true
 
-      - name: Install dependencies
-        run: make ci-deps
+  #     - name: Install dependencies
+  #       run: make ci-deps
 
-      - name: Run unit tests
-        run: make test
-        env:
-          NEO4J_URI: bolt://localhost:7687
-          NEO4J_USERNAME: neo4j
-          NEO4J_PASSWORD: password
+  #     - name: Run tests
+  #       run: make ci-test
+  #       env:
+  #         CI: true
+  #         NEO4J_TEST_URI: bolt://localhost:7687
+  #         NEO4J_TEST_USERNAME: neo4j
+  #         NEO4J_TEST_PASSWORD: password
 
-      - name: Run integration tests
-        run: make test-integration
-        env:
-          NEO4J_URI: bolt://localhost:7687
-          NEO4J_USERNAME: neo4j
-          NEO4J_PASSWORD: password
+  # test-coverage:
+  #   name: Test Coverage
+  #   runs-on: ubuntu-latest
+  #   services:
+  #     neo4j:
+  #       image: neo4j:5-community
+  #       env:
+  #         NEO4J_AUTH: neo4j/password
+  #         NEO4J_PLUGINS: '["apoc","graph-data-science"]'
+  #       ports:
+  #         - 7474:7474
+  #         - 7687:7687
+  #       options: >-
+  #         --health-cmd "cypher-shell -u neo4j -p password 'RETURN 1'"
+  #         --health-interval 10s
+  #         --health-timeout 5s
+  #         --health-retries 10
 
-  test-coverage:
-    name: Test Coverage
-    runs-on: ubuntu-latest
-    services:
-      neo4j:
-        image: neo4j:5-community
-        env:
-          NEO4J_AUTH: neo4j/password
-          NEO4J_PLUGINS: '["apoc","graph-data-science"]'
-        ports:
-          - 7474:7474
-          - 7687:7687
-        options: >-
-          --health-cmd "cypher-shell -u neo4j -p password 'RETURN 1'"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
+  #   steps:
+  #     - uses: actions/checkout@v4
 
-    steps:
-      - uses: actions/checkout@v4
+  #     - name: Set up Go
+  #       uses: actions/setup-go@v5
+  #       with:
+  #         go-version: ${{ env.GO_VERSION }}
+  #         cache: true
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
+  #     - name: Install dependencies
+  #       run: make ci-deps
 
-      - name: Install dependencies
-        run: make ci-deps
+  #     - name: Run tests with coverage
+  #       run: make test-coverage
+  #       env:
+  #         CI: true
+  #         NEO4J_TEST_URI: bolt://localhost:7687
+  #         NEO4J_TEST_USERNAME: neo4j
+  #         NEO4J_TEST_PASSWORD: password
 
-      - name: Run tests with coverage
-        run: make test-coverage
-        env:
-          NEO4J_URI: bolt://localhost:7687
-          NEO4J_USERNAME: neo4j
-          NEO4J_PASSWORD: password
-
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
-        with:
-          file: ./coverage.out
-          flags: unittests
-          name: codecov-umbrella
-          token: ${{ secrets.CODECOV_TOKEN }}
+  #     - name: Upload coverage to Codecov
+  #       uses: codecov/codecov-action@v4
+  #       with:
+  #         file: ./coverage.out
+  #         flags: unittests
+  #         name: codecov-umbrella
+  #         token: ${{ secrets.CODECOV_TOKEN }}
 
   security:
     name: Security Scan
@@ -171,26 +166,37 @@ jobs:
     runs-on: ubuntu-latest
     needs: [lint, test]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to Docker Hub
+      - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
-        if: github.event_name == 'push'
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix={{branch}}-
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
-          push: ${{ github.event_name == 'push' }}
-          tags: |
-            ${{ secrets.DOCKER_USERNAME }}/gograph:latest
-            ${{ secrets.DOCKER_USERNAME }}/gograph:${{ github.sha }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

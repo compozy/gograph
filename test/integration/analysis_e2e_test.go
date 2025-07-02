@@ -93,21 +93,44 @@ func TestFullProjectAnalysis(t *testing.T) {
 		// Check project statistics
 		stats, err := graphService.GetProjectStatistics(ctx, projectID)
 		require.NoError(t, err)
-		assert.Greater(t, stats.TotalNodes, 0)
-		assert.Greater(t, stats.TotalRelationships, 0)
+		assert.Greater(t, stats.TotalNodes, 0, "Should have nodes in the graph")
+		assert.Greater(t, stats.TotalRelationships, 0, "Should have relationships in the graph")
 
 		// 5. Execute some queries to verify the graph
+		// First, let's see what nodes exist with this project_id
+		debugQuery := `
+			MATCH (n {project_id: $project_id})
+			RETURN n.type as type, n.name as name
+			LIMIT 10
+		`
+		debugResults, err := repository.ExecuteQuery(ctx, debugQuery, map[string]any{
+			"project_id": projectID.String(),
+		})
+		require.NoError(t, err)
+
+		// If no nodes found with project_id, check if nodes exist without project_id filter
+		if len(debugResults) == 0 {
+			allNodesQuery := `MATCH (n) RETURN n.type as type, n.name as name LIMIT 10`
+			allResults, err := repository.ExecuteQuery(ctx, allNodesQuery, nil)
+			require.NoError(t, err)
+			t.Logf("No nodes found with project_id %s, but found %d nodes total", projectID.String(), len(allResults))
+			for i, result := range allResults {
+				t.Logf("Node %d: type=%v, name=%v", i, result["type"], result["name"])
+			}
+		}
+
 		// Find main function
 		query := `
 			MATCH (f:Function {name: 'main', project_id: $project_id})
 			RETURN f.name as name, f.signature as signature
 		`
 		results, err := repository.ExecuteQuery(ctx, query, map[string]any{
-			"project_id": string(projectID),
+			"project_id": projectID.String(),
 		})
 		require.NoError(t, err)
-		assert.Len(t, results, 1)
-		assert.Equal(t, "main", results[0]["name"])
+		if assert.Len(t, results, 1, "main function should be found in the graph") {
+			assert.Equal(t, "main", results[0]["name"])
+		}
 
 		// Check function calls - verify any CALLS relationships exist
 		query = `
