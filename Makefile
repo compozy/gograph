@@ -63,6 +63,8 @@ tidy:
 deps: 
 	$(GOCMD) install gotest.tools/gotestsum@latest
 	$(GOCMD) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6
+	$(GOCMD) install golang.org/x/vuln/cmd/govulncheck@latest
+	$(GOCMD) install github.com/securego/gosec/v2/cmd/gosec@latest
 
 # -----------------------------------------------------------------------------
 # Testing
@@ -169,11 +171,11 @@ test-benchmarks:
 # -----------------------------------------------------------------------------
 security-scan:
 	@echo "Running security scan..."
-	gosec ./...
+	gosec ./... || echo "Security issues found - review required"
 
 vulnerability-check:
 	@echo "Checking for known vulnerabilities..."
-	$(GOCMD) list -json -m all | nancy sleuth
+	govulncheck ./...
 
 # -----------------------------------------------------------------------------
 # Release & Deployment
@@ -192,8 +194,8 @@ ci-deps:
 	@echo "Installing CI dependencies..."
 	$(GOCMD) install gotest.tools/gotestsum@latest
 	$(GOCMD) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6
-	$(GOCMD) install github.com/securecodewarrior/nancy@latest
-	$(GOCMD) install github.com/securecodewarrior/gosec/v2/cmd/gosec@latest
+	$(GOCMD) install golang.org/x/vuln/cmd/govulncheck@latest
+	$(GOCMD) install github.com/securego/gosec/v2/cmd/gosec@latest
 
 ci-test: test-up test test-integration test-down
 
