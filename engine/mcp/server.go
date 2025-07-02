@@ -361,7 +361,7 @@ func (s *Server) handleQueryDependencies(ctx context.Context, req mcp.CallToolRe
 	}
 	recursive := getBool(req, "recursive")
 
-	response, err := s.handleQueryDependenciesInternal(ctx, map[string]any{
+	response, err := s.HandleQueryDependenciesInternal(ctx, map[string]any{
 		"project_id": projectID,
 		"path":       path,
 		"direction":  direction,
@@ -390,7 +390,7 @@ func (s *Server) handleFindImplementations(ctx context.Context, req mcp.CallTool
 	}
 	packageName := getString(req, "package")
 
-	response, err := s.handleFindImplementationsInternal(ctx, map[string]any{
+	response, err := s.HandleFindImplementationsInternal(ctx, map[string]any{
 		"project_id":     projectID,
 		"interface_name": interfaceName,
 		"package":        packageName,
@@ -419,7 +419,7 @@ func (s *Server) handleTraceCallChain(ctx context.Context, req mcp.CallToolReque
 	toFunction := getString(req, "to_function")
 	maxDepth := getFloat(req, "max_depth")
 
-	response, err := s.handleTraceCallChainInternal(ctx, map[string]any{
+	response, err := s.HandleTraceCallChainInternal(ctx, map[string]any{
 		"project_id":    projectID,
 		"from_function": fromFunction,
 		"to_function":   toFunction,
@@ -447,7 +447,7 @@ func (s *Server) handleDetectCircularDeps(ctx context.Context, req mcp.CallToolR
 		scope = "package"
 	}
 
-	response, err := s.handleDetectCircularDepsInternal(ctx, map[string]any{
+	response, err := s.HandleDetectCircularDepsInternal(ctx, map[string]any{
 		"project_id": projectID,
 		"scope":      scope,
 	})
@@ -503,7 +503,7 @@ func (s *Server) handleListPackages(ctx context.Context, req mcp.CallToolRequest
 	pattern := getString(req, "pattern")
 	includeExternal := getBool(req, "include_external")
 
-	response, err := s.handleListPackagesInternal(ctx, map[string]any{
+	response, err := s.HandleListPackagesInternal(ctx, map[string]any{
 		"project_id":       projectID,
 		"pattern":          pattern,
 		"include_external": includeExternal,
@@ -531,7 +531,7 @@ func (s *Server) handleGetPackageStructure(ctx context.Context, req mcp.CallTool
 	}
 	includePrivate := getBool(req, "include_private")
 
-	response, err := s.handleGetPackageStructureInternal(ctx, map[string]any{
+	response, err := s.HandleGetPackageStructureInternal(ctx, map[string]any{
 		"project_id":      projectID,
 		"package":         packageName,
 		"include_private": includePrivate,
@@ -587,7 +587,7 @@ func (s *Server) handleNaturalLanguageQuery(ctx context.Context, req mcp.CallToo
 	}
 	context := getString(req, "context")
 
-	response, err := s.handleNaturalLanguageQueryInternal(ctx, map[string]any{
+	response, err := s.HandleNaturalLanguageQueryInternal(ctx, map[string]any{
 		"project_id": projectID,
 		"query":      query,
 		"context":    context,
@@ -652,7 +652,7 @@ func (s *Server) handleGetCodeContext(ctx context.Context, req mcp.CallToolReque
 	}
 	contextLines := getFloat(req, "context_lines")
 
-	response, err := s.handleGetCodeContextInternal(ctx, map[string]any{
+	response, err := s.HandleGetCodeContextInternal(ctx, map[string]any{
 		"project_id":    projectID,
 		"element_type":  elementType,
 		"name":          name,
@@ -682,7 +682,7 @@ func (s *Server) handleValidateImportPath(ctx context.Context, req mcp.CallToolR
 	}
 	fromPackage := getString(req, "from_package")
 
-	response, err := s.handleValidateImportPathInternal(ctx, map[string]any{
+	response, err := s.HandleValidateImportPathInternal(ctx, map[string]any{
 		"project_id":   projectID,
 		"import_path":  importPath,
 		"from_package": fromPackage,
@@ -710,7 +710,7 @@ func (s *Server) handleDetectCodePatterns(ctx context.Context, req mcp.CallToolR
 		scope = "project"
 	}
 
-	response, err := s.handleDetectCodePatternsInternal(ctx, map[string]any{
+	response, err := s.HandleDetectCodePatternsInternal(ctx, map[string]any{
 		"project_id": projectID,
 		"patterns":   patterns,
 		"scope":      scope,
@@ -735,7 +735,7 @@ func (s *Server) handleGetNamingConventions(ctx context.Context, req mcp.CallToo
 	scope := getString(req, "scope")
 	includeSuggestions := getBool(req, "include_suggestions")
 
-	response, err := s.handleGetNamingConventionsInternal(ctx, map[string]any{
+	response, err := s.HandleGetNamingConventionsInternal(ctx, map[string]any{
 		"project_id":          projectID,
 		"scope":               scope,
 		"include_suggestions": includeSuggestions,
@@ -767,7 +767,7 @@ func (s *Server) handleFindTestsForCode(ctx context.Context, req mcp.CallToolReq
 	}
 	packageName := getString(req, "package")
 
-	response, err := s.handleFindTestsForCodeInternal(ctx, map[string]any{
+	response, err := s.HandleFindTestsForCodeInternal(ctx, map[string]any{
 		"project_id":   projectID,
 		"element_type": elementType,
 		"name":         name,
@@ -793,7 +793,7 @@ func (s *Server) handleCheckTestCoverage(ctx context.Context, req mcp.CallToolRe
 	path := getString(req, "path")
 	detailed := getBool(req, "detailed")
 
-	response, err := s.handleCheckTestCoverageInternal(ctx, map[string]any{
+	response, err := s.HandleCheckTestCoverageInternal(ctx, map[string]any{
 		"project_id": projectID,
 		"path":       path,
 		"detailed":   detailed,

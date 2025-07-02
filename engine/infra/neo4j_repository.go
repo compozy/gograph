@@ -355,22 +355,36 @@ func (r *Neo4jRepository) CreateRelationship(ctx context.Context, rel *core.Rela
 	session := r.driver.NewSession(ctx, neo4j.SessionConfig{})
 	defer session.Close(ctx)
 
+	// Build the relationship properties map (excluding node matching properties)
+	relProps := map[string]any{
+		"id":         rel.ID.String(),
+		"created_at": rel.CreatedAt.UTC(),
+	}
+
+	// Add relationship properties if they exist
+	if rel.Properties != nil {
+		for k, v := range rel.Properties {
+			// Convert time values to UTC
+			if t, ok := v.(time.Time); ok {
+				relProps[k] = t.UTC()
+			} else {
+				relProps[k] = v
+			}
+		}
+	}
+
 	query := fmt.Sprintf(`
-		MATCH (from), (to)
-		WHERE from.id = $from_id AND to.id = $to_id
-		CREATE (from)-[r:%s {
-			id: $id,
-			created_at: $created_at
-		}]->(to)
+		MATCH (from {id: $from_id}), (to {id: $to_id})
+		CREATE (from)-[r:%s]->(to)
+		SET r = $props
 		RETURN r
 	`, rel.Type)
 
 	_, err := session.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
 		result, err := tx.Run(ctx, query, map[string]any{
-			"from_id":    rel.FromNodeID.String(),
-			"to_id":      rel.ToNodeID.String(),
-			"id":         rel.ID.String(),
-			"created_at": rel.CreatedAt,
+			"from_id": rel.FromNodeID.String(),
+			"to_id":   rel.ToNodeID.String(),
+			"props":   relProps,
 		})
 		if err != nil {
 			return nil, err
@@ -419,23 +433,38 @@ func (r *Neo4jRepository) CreateRelationships(ctx context.Context, rels []core.R
 				// Convert relationships to parameter list
 				relParams := make([]map[string]any, len(typedRels))
 				for i, rel := range typedRels {
-					relParams[i] = map[string]any{
-						"from_id":    rel.FromNodeID.String(),
-						"to_id":      rel.ToNodeID.String(),
+					// Create the relationship data (excluding node matching fields)
+					relData := map[string]any{
 						"id":         rel.ID.String(),
 						"created_at": rel.CreatedAt.UTC(),
+					}
+
+					// Add relationship properties if they exist
+					if rel.Properties != nil {
+						for k, v := range rel.Properties {
+							// Convert time values to UTC
+							if t, ok := v.(time.Time); ok {
+								relData[k] = t.UTC()
+							} else {
+								relData[k] = v
+							}
+						}
+					}
+
+					// Create the full parameter object
+					relParams[i] = map[string]any{
+						"from_id": rel.FromNodeID.String(),
+						"to_id":   rel.ToNodeID.String(),
+						"props":   relData,
 					}
 				}
 
 				// Use UNWIND for efficient batch creation with index hints
 				query := fmt.Sprintf(`
 					UNWIND $rels AS rel
-					MATCH (from), (to)
-					WHERE from.id = rel.from_id AND to.id = rel.to_id
-					CREATE (from)-[r:%s {
-						id: rel.id,
-						created_at: rel.created_at
-					}]->(to)
+					MATCH (from {id: rel.from_id}), (to {id: rel.to_id})
+					CREATE (from)-[r:%s]->(to)
+					SET r = rel.props
 				`, relType)
 
 				_, err := tx.Run(ctx, query, map[string]any{
@@ -570,19 +599,32 @@ func (r *Neo4jRepository) ImportAnalysisResult(ctx context.Context, result *core
 		logger.Warn("failed to create indexes, continuing anyway", "error", err)
 	}
 
-	// Create all nodes first using batch operations
-	logger.Info("importing nodes", "count", len(result.Nodes))
-	if err := r.CreateNodes(ctx, result.Nodes); err != nil {
-		return fmt.Errorf("failed to create nodes: %w", err)
+	// Use a single session for the entire import to ensure consistency
+	session := r.driver.NewSession(ctx, neo4j.SessionConfig{})
+	defer session.Close(ctx)
+
+	// Execute the entire import in a single write transaction to ensure consistency
+	_, err := session.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
+		// Create all nodes first using batch operations
+		logger.Info("importing nodes", "count", len(result.Nodes))
+		if err := r.createNodesInTransaction(ctx, tx, result.Nodes); err != nil {
+			return nil, fmt.Errorf("failed to create nodes: %w", err)
+		}
+
+		// Then create all relationships using batch operations
+		logger.Info("importing relationships", "count", len(result.Relationships))
+		if err := r.createRelationshipsInTransaction(ctx, tx, result.Relationships); err != nil {
+			return nil, fmt.Errorf("failed to create relationships: %w", err)
+		}
+
+		return nil, nil
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to import analysis result: %w", err)
 	}
 
-	// Then create all relationships using batch operations
-	logger.Info("importing relationships", "count", len(result.Relationships))
-	if err := r.CreateRelationships(ctx, result.Relationships); err != nil {
-		return fmt.Errorf("failed to create relationships: %w", err)
-	}
-
-	// Create project metadata node
+	// Create project metadata node (outside main transaction as it's not critical)
 	if err := r.createProjectMetadata(ctx, result); err != nil {
 		logger.Warn("failed to create project metadata", "error", err)
 	}
@@ -595,6 +637,165 @@ func (r *Neo4jRepository) ImportAnalysisResult(ctx context.Context, result *core
 		"duration", duration,
 		"nodes_per_second", float64(len(result.Nodes))/duration.Seconds(),
 		"relationships_per_second", float64(len(result.Relationships))/duration.Seconds())
+
+	return nil
+}
+
+// createNodesInTransaction creates multiple nodes within an existing transaction
+func (r *Neo4jRepository) createNodesInTransaction(
+	ctx context.Context,
+	tx neo4j.ManagedTransaction,
+	nodes []core.Node,
+) error {
+	if len(nodes) == 0 {
+		return nil
+	}
+
+	// Determine batch size (default to 1000 if not configured)
+	batchSize := r.config.BatchSize
+	if batchSize <= 0 {
+		batchSize = 1000
+	}
+
+	// Process nodes in batches
+	for i := 0; i < len(nodes); i += batchSize {
+		end := i + batchSize
+		if end > len(nodes) {
+			end = len(nodes)
+		}
+		batch := nodes[i:end]
+
+		// Group nodes by type for more efficient batch creation
+		nodesByType := make(map[core.NodeType][]core.Node)
+		for _, node := range batch {
+			nodesByType[node.Type] = append(nodesByType[node.Type], node)
+		}
+
+		// Create nodes for each type using UNWIND
+		for nodeType, typedNodes := range nodesByType {
+			// Convert nodes to parameter list
+			nodeParams := make([]map[string]any, len(typedNodes))
+			for i, node := range typedNodes {
+				params := map[string]any{
+					"id":         node.ID.String(),
+					"name":       node.Name,
+					"path":       node.Path,
+					"created_at": node.CreatedAt.UTC(),
+				}
+				// Add node properties if they exist
+				if node.Properties != nil {
+					for k, v := range node.Properties {
+						// Convert time values to UTC
+						if t, ok := v.(time.Time); ok {
+							params[k] = t.UTC()
+						} else {
+							params[k] = v
+						}
+					}
+				}
+				nodeParams[i] = params
+			}
+
+			// Use UNWIND for efficient batch creation with dynamic properties
+			query := fmt.Sprintf(`
+				UNWIND $nodes AS node
+				CREATE (n:%s)
+				SET n = node
+			`, nodeType)
+
+			_, err := tx.Run(ctx, query, map[string]any{
+				"nodes": nodeParams,
+			})
+			if err != nil {
+				return fmt.Errorf("failed to create batch of %s nodes: %w", nodeType, err)
+			}
+		}
+
+		logger.Debug("created node batch", "batch_start", i, "batch_end", end, "total", len(nodes))
+	}
+
+	return nil
+}
+
+// createRelationshipsInTransaction creates multiple relationships within an existing transaction
+func (r *Neo4jRepository) createRelationshipsInTransaction(
+	ctx context.Context,
+	tx neo4j.ManagedTransaction,
+	rels []core.Relationship,
+) error {
+	if len(rels) == 0 {
+		return nil
+	}
+
+	// Determine batch size (default to 1000 if not configured)
+	batchSize := r.config.BatchSize
+	if batchSize <= 0 {
+		batchSize = 1000
+	}
+
+	// Process relationships in batches
+	for i := 0; i < len(rels); i += batchSize {
+		end := i + batchSize
+		if end > len(rels) {
+			end = len(rels)
+		}
+		batch := rels[i:end]
+
+		// Group relationships by type for more efficient batch creation
+		relsByType := make(map[core.RelationType][]core.Relationship)
+		for _, rel := range batch {
+			relsByType[rel.Type] = append(relsByType[rel.Type], rel)
+		}
+
+		// Create relationships for each type using UNWIND
+		for relType, typedRels := range relsByType {
+			// Convert relationships to parameter list
+			relParams := make([]map[string]any, len(typedRels))
+			for i, rel := range typedRels {
+				// Create the relationship data (excluding node matching fields)
+				relData := map[string]any{
+					"id":         rel.ID.String(),
+					"created_at": rel.CreatedAt.UTC(),
+				}
+
+				// Add relationship properties if they exist
+				if rel.Properties != nil {
+					for k, v := range rel.Properties {
+						// Convert time values to UTC
+						if t, ok := v.(time.Time); ok {
+							relData[k] = t.UTC()
+						} else {
+							relData[k] = v
+						}
+					}
+				}
+
+				// Create the full parameter object
+				relParams[i] = map[string]any{
+					"from_id": rel.FromNodeID.String(),
+					"to_id":   rel.ToNodeID.String(),
+					"props":   relData,
+				}
+			}
+
+			// Use UNWIND for efficient batch creation with index hints
+			query := fmt.Sprintf(`
+				UNWIND $rels AS rel
+				MATCH (from {id: rel.from_id}), (to {id: rel.to_id})
+				CREATE (from)-[r:%s]->(to)
+				SET r = rel.props
+			`, relType)
+
+			_, err := tx.Run(ctx, query, map[string]any{
+				"rels": relParams,
+			})
+			if err != nil {
+				return fmt.Errorf("failed to create batch of %s relationships: %w", relType, err)
+			}
+		}
+
+		logger.Debug("created relationship batch", "batch_start", i, "batch_end", end, "total", len(rels))
+	}
 
 	return nil
 }

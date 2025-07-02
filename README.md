@@ -98,9 +98,194 @@ docker run -v $(pwd):/workspace compozy/gograph:latest analyze /workspace
    ```
 
 4. **Query the graph**:
+
    ```bash
    gograph query "MATCH (n:Function) RETURN n.name LIMIT 10"
    ```
+
+5. **View the complete graph in Neo4j Browser**:
+   ```bash
+   # Open Neo4j Browser at http://localhost:7474
+   # Login with: neo4j/password
+   # Run this query to see the entire codebase graph:
+   MATCH (n) RETURN n LIMIT 500
+   ```
+
+## 🔍 Complete Codebase Analysis Workflow
+
+Here's a step-by-step guide to analyze your entire codebase and visualize it in Neo4j:
+
+### 1. Setup and Analysis
+
+```bash
+# Start Neo4j database
+make run-neo4j
+
+# Navigate to your Go project directory
+cd /path/to/your/go/project
+
+# Initialize gograph configuration
+gograph init --project-name my-awesome-project
+
+# Analyze the entire codebase (including tests and dependencies)
+gograph analyze . \
+  --include-tests \
+  --include-vendor \
+  --concurrency 8 \
+  --project-id my-awesome-project
+```
+
+### 2. Access Neo4j Browser
+
+1. Open your web browser and go to: **http://localhost:7474**
+2. Login with:
+   - **Username**: `neo4j`
+   - **Password**: `password`
+
+### 3. Essential Graph Visualization Queries
+
+Once connected, try these queries to explore your codebase:
+
+#### **Complete Project Overview**
+
+```cypher
+// View the entire project structure
+MATCH (n)
+WHERE n.project_id = 'my-awesome-project'
+RETURN n
+LIMIT 500
+```
+
+#### **Package Dependencies**
+
+```cypher
+// Visualize package import relationships
+MATCH (p1:Package)-[:IMPORTS]->(p2:Package)
+WHERE p1.project_id = 'my-awesome-project'
+RETURN p1, p2
+```
+
+#### **Function Call Graph**
+
+```cypher
+// See function call relationships
+MATCH (f1:Function)-[:CALLS]->(f2:Function)
+WHERE f1.project_id = 'my-awesome-project'
+RETURN f1, f2
+LIMIT 100
+```
+
+#### **Architecture Overview**
+
+```cypher
+// High-level architecture view (packages and their relationships)
+MATCH path = (p1:Package)-[:IMPORTS*1..2]->(p2:Package)
+WHERE p1.project_id = 'my-awesome-project'
+  AND p2.project_id = 'my-awesome-project'
+RETURN path
+LIMIT 50
+```
+
+#### **Code Complexity Hotspots**
+
+```cypher
+// Find the most connected functions (potential complexity hotspots)
+MATCH (f:Function)
+WHERE f.project_id = 'my-awesome-project'
+WITH f,
+     size((f)-[:CALLS]->()) as outgoing_calls,
+     size((f)<-[:CALLS]-()) as incoming_calls
+RETURN f.name, f.package, outgoing_calls, incoming_calls,
+       (outgoing_calls + incoming_calls) as total_connections
+ORDER BY total_connections DESC
+LIMIT 20
+```
+
+### 4. Interactive Exploration Tips
+
+**In Neo4j Browser:**
+
+1. **Expand Nodes**: Click on any node to see its properties
+2. **Follow Relationships**: Double-click relationships to explore connections
+3. **Filter Results**: Use the sidebar to filter node types and relationships
+4. **Adjust Layout**: Use the layout options to better organize the graph
+5. **Export Views**: Save interesting queries and graph views
+
+**Useful Browser Commands:**
+
+```cypher
+// Show node labels and relationship types
+CALL db.labels()
+CALL db.relationshipTypes()
+
+// Count nodes by type
+MATCH (n)
+WHERE n.project_id = 'my-awesome-project'
+RETURN labels(n)[0] as NodeType, count(n) as Count
+ORDER BY Count DESC
+
+// Find circular dependencies
+MATCH path = (p:Package)-[:IMPORTS*2..]->(p)
+WHERE p.project_id = 'my-awesome-project'
+RETURN path
+LIMIT 10
+```
+
+### 5. Advanced Analysis Examples
+
+```bash
+# Find unused functions
+gograph query "
+  MATCH (f:Function)
+  WHERE f.project_id = 'my-awesome-project'
+    AND NOT (f)<-[:CALLS]-()
+    AND NOT f.name = 'main'
+  RETURN f.name, f.package, f.file
+  ORDER BY f.package, f.name
+"
+
+# Analyze test coverage by package
+gograph query "
+  MATCH (p:Package)
+  WHERE p.project_id = 'my-awesome-project'
+  OPTIONAL MATCH (p)-[:CONTAINS]->(f:File)
+  WHERE f.name ENDS WITH '_test.go'
+  WITH p, count(f) as test_files
+  OPTIONAL MATCH (p)-[:CONTAINS]->(f2:File)
+  WHERE NOT f2.name ENDS WITH '_test.go'
+  RETURN p.name, count(f2) as source_files, test_files,
+         CASE WHEN count(f2) > 0
+              THEN round(100.0 * test_files / count(f2), 2)
+              ELSE 0 END as test_ratio
+  ORDER BY test_ratio DESC
+"
+
+# Find interface implementations
+gograph query "
+  MATCH (s:Struct)-[:IMPLEMENTS]->(i:Interface)
+  WHERE s.project_id = 'my-awesome-project'
+  RETURN i.name as Interface,
+         collect(s.name) as Implementations,
+         count(s) as ImplementationCount
+  ORDER BY ImplementationCount DESC
+"
+```
+
+### 6. Export and Share Results
+
+```bash
+# Export query results to JSON
+gograph query "MATCH (n:Package) RETURN n" --format json --output packages.json
+
+# Export to CSV for further analysis
+gograph query "
+  MATCH (f:Function)<-[:CALLS]-(caller)
+  RETURN f.name, f.package, count(caller) as call_count
+  ORDER BY call_count DESC
+" --format csv --output function_popularity.csv
+```
+
+This workflow gives you a complete view of your codebase structure, dependencies, and relationships, making it easy to understand complex Go projects and identify architectural patterns or issues.
 
 ## 📖 Usage
 

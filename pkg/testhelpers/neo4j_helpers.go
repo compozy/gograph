@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,20 +28,29 @@ var (
 	defaultTestPassword = "testpassword123!"
 )
 
-// StartNeo4jContainer ensures Neo4j is running via docker-compose
+// StartNeo4jContainer ensures Neo4j is running via docker-compose or uses existing service in CI
 func StartNeo4jContainer(ctx context.Context) (*Neo4jTestContainer, error) {
-	// Check if docker-compose is already running
+	container := &Neo4jTestContainer{
+		URI:      getEnvOrDefault("NEO4J_TEST_URI", defaultTestURI),
+		Username: getEnvOrDefault("NEO4J_TEST_USERNAME", defaultTestUsername),
+		Password: getEnvOrDefault("NEO4J_TEST_PASSWORD", defaultTestPassword),
+	}
+
+	// In CI environments, Neo4j should already be running as a service
+	if os.Getenv("CI") == "true" {
+		// Just verify connection in CI
+		if err := waitForNeo4j(ctx, container); err != nil {
+			return nil, fmt.Errorf("Neo4j service not ready in CI: %w", err)
+		}
+		return container, nil
+	}
+
+	// For local development, manage docker-compose
 	if err := checkDockerComposeStatus(); err != nil {
 		// Start docker-compose if not running
 		if err := startDockerCompose(); err != nil {
 			return nil, fmt.Errorf("failed to start docker-compose: %w", err)
 		}
-	}
-
-	container := &Neo4jTestContainer{
-		URI:      getEnvOrDefault("NEO4J_TEST_URI", defaultTestURI),
-		Username: getEnvOrDefault("NEO4J_TEST_USERNAME", defaultTestUsername),
-		Password: getEnvOrDefault("NEO4J_TEST_PASSWORD", defaultTestPassword),
 	}
 
 	// Wait for Neo4j to be ready
@@ -134,9 +144,53 @@ func (tc *Neo4jTestContainer) ClearDatabase(ctx context.Context) error {
 	})
 	defer session.Close(ctx)
 
-	// Delete all nodes and relationships
-	_, err = session.Run(ctx, "MATCH (n) DETACH DELETE n", nil)
+	// Delete all nodes and relationships with a retry mechanism to handle deadlocks
+	maxRetries := 3
+	for i := 0; i < maxRetries; i++ {
+		_, err = session.Run(ctx, "MATCH (n) DETACH DELETE n", nil)
+		if err == nil {
+			return nil
+		}
+
+		// Check if it's a deadlock error and retry
+		if i < maxRetries-1 && isDeadlockError(err) {
+			time.Sleep(time.Duration(i+1) * 100 * time.Millisecond) // Exponential backoff
+			continue
+		}
+
+		return err
+	}
+
 	return err
+}
+
+// ClearDatabaseForProject removes all nodes and relationships for a specific project
+func (tc *Neo4jTestContainer) ClearDatabaseForProject(ctx context.Context, projectID string) error {
+	driver, err := tc.CreateDriver()
+	if err != nil {
+		return fmt.Errorf("failed to create driver: %w", err)
+	}
+	defer driver.Close(ctx)
+
+	session := driver.NewSession(ctx, neo4j.SessionConfig{
+		AccessMode: neo4j.AccessModeWrite,
+	})
+	defer session.Close(ctx)
+
+	// Delete only nodes and relationships for this specific project
+	_, err = session.Run(ctx, "MATCH (n {project_id: $project_id}) DETACH DELETE n", map[string]any{
+		"project_id": projectID,
+	})
+	return err
+}
+
+// isDeadlockError checks if the error is a Neo4j deadlock error
+func isDeadlockError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "DeadlockDetected") ||
+		strings.Contains(err.Error(), "deadlock")
 }
 
 // ExecuteCypher executes a Cypher query against the test database
@@ -178,9 +232,9 @@ func IsNeo4jAvailable() bool {
 	defer cancel()
 
 	container := &Neo4jTestContainer{
-		URI:      defaultTestURI,
-		Username: defaultTestUsername,
-		Password: defaultTestPassword,
+		URI:      getEnvOrDefault("NEO4J_TEST_URI", defaultTestURI),
+		Username: getEnvOrDefault("NEO4J_TEST_USERNAME", defaultTestUsername),
+		Password: getEnvOrDefault("NEO4J_TEST_PASSWORD", defaultTestPassword),
 	}
 
 	return container.VerifyConnection(ctx) == nil
