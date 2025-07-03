@@ -76,8 +76,23 @@ func Load(configPath string) (*Config, error) {
 	cfg := DefaultConfig()
 
 	if configPath == "" {
-		// Look for config file in current directory
-		configPath = filepath.Join(".", defaultConfigFileName+"."+defaultConfigType)
+		// Look for config file in current directory - try both formats
+		possiblePaths := []string{
+			filepath.Join(".", "gograph.yaml"),                              // New format
+			filepath.Join(".", defaultConfigFileName+"."+defaultConfigType), // Legacy format (.gograph.yaml)
+		}
+
+		configPath = ""
+		for _, path := range possiblePaths {
+			if _, err := os.Stat(path); err == nil {
+				configPath = path
+				break
+			}
+		}
+
+		if configPath == "" {
+			return cfg, nil // Return default config if no config file found
+		}
 	}
 
 	// Check if config file exists

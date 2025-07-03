@@ -1,6 +1,7 @@
 package logger
 
 import (
+	"io"
 	"os"
 	"sync"
 
@@ -79,4 +80,16 @@ func Fatal(msg string, keyvals ...any) {
 func With(keyvals ...any) *log.Logger {
 	ensureInitialized()
 	return logger.With(keyvals...)
+}
+
+// Disable completely disables logging output
+func Disable() {
+	ensureInitialized()
+	logger.SetOutput(io.Discard)
+}
+
+// Enable re-enables logging output to stderr
+func Enable() {
+	ensureInitialized()
+	logger.SetOutput(os.Stderr)
 }

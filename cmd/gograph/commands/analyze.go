@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/compozy/gograph/pkg/errors"
 	"github.com/compozy/gograph/pkg/logger"
 	"github.com/compozy/gograph/pkg/progress"
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
 
@@ -116,6 +118,14 @@ The resulting graph allows you to:
 				return runAnalysisWithoutProgress(projectPath, projectID, parserConfig, analyzerConfig, neo4jConfig)
 			}
 
+			// Check if we're in TTY mode and suppress logging if so
+			isTTY := isatty.IsTerminal(os.Stdout.Fd()) || isatty.IsCygwinTerminal(os.Stdout.Fd())
+			if isTTY {
+				// Suppress all logging output to avoid conflicts with TUI
+				logger.Disable()
+				defer logger.Enable() // Re-enable after completion
+			}
+
 			return runAnalysisWithProgress(projectPath, projectID, parserConfig, analyzerConfig, neo4jConfig)
 		})
 	},
@@ -206,88 +216,155 @@ func runAnalysisWithProgress(
 	neo4jConfig *infra.Neo4jConfig,
 ) error {
 	ctx := context.Background()
-	startTime := time.Now()
 
-	var parseResult *parser.ParseResult
-	var report *analyzer.AnalysisReport
-	var graphResult *core.AnalysisResult
+	// Initialize adaptive progress
+	progressIndicator := progress.NewAdaptiveProgress(os.Stdout)
+	phases := []progress.PhaseInfo{
+		{Name: "Parsing", Description: "Scanning and parsing Go source files", Weight: 0.3},
+		{Name: "Analysis", Description: "Analyzing code structure and relationships", Weight: 0.3},
+		{Name: "Graph Building", Description: "Building graph representation", Weight: 0.2},
+		{Name: "Storage", Description: "Storing results in Neo4j", Weight: 0.2},
+	}
+	progressIndicator.SetPhases(phases)
+	progressIndicator.Start(fmt.Sprintf("Analyzing project: %s", projectPath))
 
-	// -----
-	// Parsing Phase
-	// -----
-	err := progress.WithProgress("Parsing project files", func() error {
-		parserService := parser.NewService(parserConfig)
-		var err error
-		parseResult, err = parserService.ParseProject(ctx, projectPath, parserConfig)
+	// Parse project
+	parseResult, err := runParsingPhase(ctx, projectPath, parserConfig, progressIndicator)
+	if err != nil {
 		return err
-	})
-	if err != nil {
-		return fmt.Errorf("failed to parse project: %w", err)
 	}
 
-	// -----
-	// Analysis Phase
-	// -----
-	err = progress.WithProgress("Analyzing code structure", func() error {
-		analyzerService := analyzer.NewAnalyzer(analyzerConfig)
-		analysisInput := &analyzer.AnalysisInput{
-			ProjectID: projectID.String(),
-			Files:     parseResult.Files,
-		}
-		var err error
-		report, err = analyzerService.AnalyzeProject(ctx, analysisInput)
+	// Analyze project
+	report, err := runAnalysisPhase(ctx, projectID, parseResult, analyzerConfig, progressIndicator)
+	if err != nil {
 		return err
-	})
-	if err != nil {
-		return fmt.Errorf("failed to analyze project: %w", err)
 	}
 
-	// -----
-	// Graph Building Phase
-	// -----
-	err = progress.WithProgress("Building graph representation", func() error {
-		builder := graph.NewBuilder(nil) // Use default config
-		var err error
-		graphResult, err = builder.BuildFromAnalysis(ctx, projectID, parseResult, report)
+	// Build graph
+	graphResult, err := runGraphBuildingPhase(ctx, projectID, parseResult, report, progressIndicator)
+	if err != nil {
 		return err
-	})
-	if err != nil {
-		return fmt.Errorf("failed to build graph: %w", err)
 	}
 
-	// -----
-	// Storage Phase
-	// -----
-	err = progress.WithProgressSteps("Storing in Neo4j", func(update func(string), _ func(int, int)) error {
-		update("Connecting to database")
-		repo, err := infra.NewNeo4jRepository(neo4jConfig)
-		if err != nil {
-			return fmt.Errorf("failed to create Neo4j repository: %w", err)
-		}
-		defer repo.Close()
-
-		update("Storing nodes and relationships")
-		return repo.StoreAnalysis(ctx, graphResult)
-	})
+	// Store results
+	err = runStoragePhase(ctx, graphResult, neo4jConfig, progressIndicator)
 	if err != nil {
-		return fmt.Errorf("failed to store analysis: %w", err)
+		return err
 	}
 
-	duration := time.Since(startTime)
+	// Success with detailed statistics
+	successMsg := "Analysis completed successfully!"
 
-	// Final summary
-	logger.Info("✓ Analysis completed successfully")
-	logger.Info("Summary:",
-		"files", len(parseResult.Files),
-		"nodes", len(graphResult.Nodes),
-		"relationships", len(graphResult.Relationships),
-		"duration", duration.Round(time.Millisecond),
-		"project_id", projectID)
+	// Create detailed statistics
+	stats := progress.AnalysisStats{
+		Files:         len(parseResult.Files),
+		Nodes:         len(graphResult.Nodes),
+		Relationships: len(graphResult.Relationships),
+		Interfaces:    len(report.InterfaceImplementations),
+		CallChains:    len(report.CallChains),
+		ProjectID:     projectID.String(),
+	}
+
+	progressIndicator.SuccessWithStats(successMsg, stats)
 
 	return nil
 }
 
 var initAnalyzeOnce sync.Once
+
+func runParsingPhase(
+	ctx context.Context,
+	projectPath string,
+	parserConfig *parser.Config,
+	progressIndicator *progress.AdaptiveProgress,
+) (*parser.ParseResult, error) {
+	progressIndicator.UpdatePhase("Parsing")
+	progressIndicator.UpdateProgress(0.0, "Initializing parser")
+
+	parserService := parser.NewService(parserConfig)
+	progressIndicator.UpdateProgress(0.1, "Scanning project files")
+
+	parseResult, err := parserService.ParseProject(ctx, projectPath, parserConfig)
+	if err != nil {
+		progressIndicator.Error(fmt.Errorf("failed to parse project: %w", err))
+		return nil, fmt.Errorf("failed to parse project: %w", err)
+	}
+	progressIndicator.UpdateProgress(0.25, fmt.Sprintf("Parsed %d files", len(parseResult.Files)))
+	return parseResult, nil
+}
+
+func runAnalysisPhase(
+	ctx context.Context,
+	projectID core.ID,
+	parseResult *parser.ParseResult,
+	analyzerConfig *analyzer.Config,
+	progressIndicator *progress.AdaptiveProgress,
+) (*analyzer.AnalysisReport, error) {
+	progressIndicator.UpdatePhase("Analysis")
+	progressIndicator.UpdateProgress(0.3, "Initializing analyzer")
+
+	analyzerService := analyzer.NewAnalyzer(analyzerConfig)
+	analysisInput := &analyzer.AnalysisInput{
+		ProjectID: projectID.String(),
+		Files:     parseResult.Files,
+	}
+	progressIndicator.UpdateProgress(0.4, "Analyzing structure and dependencies")
+
+	report, err := analyzerService.AnalyzeProject(ctx, analysisInput)
+	if err != nil {
+		progressIndicator.Error(fmt.Errorf("failed to analyze project: %w", err))
+		return nil, fmt.Errorf("failed to analyze project: %w", err)
+	}
+	progressIndicator.UpdateProgress(0.55, fmt.Sprintf("Found %d interfaces, %d call chains",
+		len(report.InterfaceImplementations), len(report.CallChains)))
+	return report, nil
+}
+
+func runGraphBuildingPhase(
+	ctx context.Context,
+	projectID core.ID,
+	parseResult *parser.ParseResult,
+	report *analyzer.AnalysisReport,
+	progressIndicator *progress.AdaptiveProgress,
+) (*core.AnalysisResult, error) {
+	progressIndicator.UpdatePhase("Graph Building")
+	progressIndicator.UpdateProgress(0.6, "Building graph nodes and relationships")
+
+	builder := graph.NewBuilder(nil) // Use default config
+	graphResult, err := builder.BuildFromAnalysis(ctx, projectID, parseResult, report)
+	if err != nil {
+		progressIndicator.Error(fmt.Errorf("failed to build graph: %w", err))
+		return nil, fmt.Errorf("failed to build graph: %w", err)
+	}
+	progressIndicator.UpdateProgress(0.75, fmt.Sprintf("Built %d nodes, %d relationships",
+		len(graphResult.Nodes), len(graphResult.Relationships)))
+	return graphResult, nil
+}
+
+func runStoragePhase(
+	ctx context.Context,
+	graphResult *core.AnalysisResult,
+	neo4jConfig *infra.Neo4jConfig,
+	progressIndicator *progress.AdaptiveProgress,
+) error {
+	progressIndicator.UpdatePhase("Storage")
+	progressIndicator.UpdateProgress(0.8, "Connecting to Neo4j database")
+
+	repo, err := infra.NewNeo4jRepository(neo4jConfig)
+	if err != nil {
+		progressIndicator.Error(fmt.Errorf("failed to create Neo4j repository: %w", err))
+		return fmt.Errorf("failed to create Neo4j repository: %w", err)
+	}
+	defer repo.Close()
+
+	progressIndicator.UpdateProgress(0.9, "Storing nodes and relationships")
+	err = repo.StoreAnalysis(ctx, graphResult)
+	if err != nil {
+		progressIndicator.Error(fmt.Errorf("failed to store analysis: %w", err))
+		return fmt.Errorf("failed to store analysis: %w", err)
+	}
+	return nil
+}
 
 // InitAnalyzeCommand registers the analyze command
 func InitAnalyzeCommand() {
