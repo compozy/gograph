@@ -2,7 +2,9 @@ package infra
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/compozy/gograph/engine/core"
@@ -140,15 +142,11 @@ func (r *Neo4jRepository) CreateNode(ctx context.Context, node *core.Node) error
 		"created_at": node.CreatedAt.UTC(),
 	}
 
-	// Add node properties if they exist
+	// Serialize complex properties
 	if node.Properties != nil {
-		for k, v := range node.Properties {
-			// Convert time values to UTC
-			if t, ok := v.(time.Time); ok {
-				params[k] = t.UTC()
-			} else {
-				params[k] = v
-			}
+		serializedProps := r.serializeComplexProperties(node.Properties)
+		for k, v := range serializedProps {
+			params[k] = v
 		}
 	}
 
@@ -213,15 +211,12 @@ func (r *Neo4jRepository) CreateNodes(ctx context.Context, nodes []core.Node) er
 						"path":       node.Path,
 						"created_at": node.CreatedAt.UTC(),
 					}
-					// Add node properties if they exist
+
+					// Serialize complex properties
 					if node.Properties != nil {
-						for k, v := range node.Properties {
-							// Convert time values to UTC
-							if t, ok := v.(time.Time); ok {
-								params[k] = t.UTC()
-							} else {
-								params[k] = v
-							}
+						serializedProps := r.serializeComplexProperties(node.Properties)
+						for k, v := range serializedProps {
+							params[k] = v
 						}
 					}
 					nodeParams[i] = params
@@ -361,15 +356,11 @@ func (r *Neo4jRepository) CreateRelationship(ctx context.Context, rel *core.Rela
 		"created_at": rel.CreatedAt.UTC(),
 	}
 
-	// Add relationship properties if they exist
+	// Serialize complex properties
 	if rel.Properties != nil {
-		for k, v := range rel.Properties {
-			// Convert time values to UTC
-			if t, ok := v.(time.Time); ok {
-				relProps[k] = t.UTC()
-			} else {
-				relProps[k] = v
-			}
+		serializedProps := r.serializeComplexProperties(rel.Properties)
+		for k, v := range serializedProps {
+			relProps[k] = v
 		}
 	}
 
@@ -439,15 +430,11 @@ func (r *Neo4jRepository) CreateRelationships(ctx context.Context, rels []core.R
 						"created_at": rel.CreatedAt.UTC(),
 					}
 
-					// Add relationship properties if they exist
+					// Serialize complex properties
 					if rel.Properties != nil {
-						for k, v := range rel.Properties {
-							// Convert time values to UTC
-							if t, ok := v.(time.Time); ok {
-								relData[k] = t.UTC()
-							} else {
-								relData[k] = v
-							}
+						serializedProps := r.serializeComplexProperties(rel.Properties)
+						for k, v := range serializedProps {
+							relData[k] = v
 						}
 					}
 
@@ -682,15 +669,11 @@ func (r *Neo4jRepository) createNodesInTransaction(
 					"path":       node.Path,
 					"created_at": node.CreatedAt.UTC(),
 				}
-				// Add node properties if they exist
+				// Serialize complex properties
 				if node.Properties != nil {
-					for k, v := range node.Properties {
-						// Convert time values to UTC
-						if t, ok := v.(time.Time); ok {
-							params[k] = t.UTC()
-						} else {
-							params[k] = v
-						}
+					serializedProps := r.serializeComplexProperties(node.Properties)
+					for k, v := range serializedProps {
+						params[k] = v
 					}
 				}
 				nodeParams[i] = params
@@ -758,15 +741,11 @@ func (r *Neo4jRepository) createRelationshipsInTransaction(
 					"created_at": rel.CreatedAt.UTC(),
 				}
 
-				// Add relationship properties if they exist
+				// Serialize complex properties
 				if rel.Properties != nil {
-					for k, v := range rel.Properties {
-						// Convert time values to UTC
-						if t, ok := v.(time.Time); ok {
-							relData[k] = t.UTC()
-						} else {
-							relData[k] = v
-						}
+					serializedProps := r.serializeComplexProperties(rel.Properties)
+					for k, v := range serializedProps {
+						relData[k] = v
 					}
 				}
 
@@ -807,6 +786,9 @@ func (r *Neo4jRepository) ensureIndexes(ctx context.Context) error {
 
 	// Create single-property indexes
 	r.createSinglePropertyIndexes(ctx, session)
+
+	// Create project_id indexes for performance optimization
+	r.createProjectIDIndexes(ctx, session)
 
 	// Create composite indexes
 	r.createCompositeIndexes(ctx, session)
@@ -857,6 +839,43 @@ func (r *Neo4jRepository) createSinglePropertyIndexes(ctx context.Context, sessi
 				"error", err)
 		}
 	}
+}
+
+// createProjectIDIndexes creates indexes specifically for project_id performance optimization
+func (r *Neo4jRepository) createProjectIDIndexes(ctx context.Context, session neo4j.SessionWithContext) {
+	// Node indexes for project_id - covering all major node types
+	nodeTypes := []string{
+		"File", "Package", "Function", "Struct", "Interface",
+		"Method", "Import", "Constant", "Variable",
+	}
+
+	for _, nodeType := range nodeTypes {
+		query := fmt.Sprintf("CREATE INDEX IF NOT EXISTS FOR (n:%s) ON (n.project_id)", nodeType)
+		_, err := session.Run(ctx, query, nil)
+		if err != nil {
+			logger.Debug("failed to create project_id index",
+				"node_type", nodeType,
+				"error", err)
+		}
+	}
+
+	// Relationship indexes for project_id - covering all major relationship types
+	relationshipTypes := []string{
+		"CONTAINS", "DEFINES", "CALLS", "IMPLEMENTS",
+		"IMPORTS", "DEPENDS_ON", "BELONGS_TO", "REFERENCES",
+	}
+
+	for _, relType := range relationshipTypes {
+		query := fmt.Sprintf("CREATE INDEX IF NOT EXISTS FOR ()-[r:%s]-() ON (r.project_id)", relType)
+		_, err := session.Run(ctx, query, nil)
+		if err != nil {
+			logger.Debug("failed to create relationship project_id index",
+				"rel_type", relType,
+				"error", err)
+		}
+	}
+
+	logger.Info("project_id indexes created for performance optimization")
 }
 
 // createCompositeIndexes creates composite indexes for optimized queries
@@ -960,20 +979,21 @@ func (r *Neo4jRepository) createProjectMetadata(ctx context.Context, result *cor
 	return err
 }
 
-// ClearProject removes all nodes and relationships for a project
+// ClearProject removes all nodes and relationships for a specific project
 func (r *Neo4jRepository) ClearProject(ctx context.Context, projectID core.ID) error {
 	session := r.driver.NewSession(ctx, neo4j.SessionConfig{})
 	defer session.Close(ctx)
 
-	// For now, clear all nodes and relationships
-	// In a real implementation, you'd want to filter by project ID
+	// Only delete nodes and relationships for the specified project_id
 	query := `
-		MATCH (n)
+		MATCH (n {project_id: $project_id})
 		DETACH DELETE n
 	`
 
 	_, err := session.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
-		result, err := tx.Run(ctx, query, nil)
+		result, err := tx.Run(ctx, query, map[string]any{
+			"project_id": projectID.String(),
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -981,25 +1001,32 @@ func (r *Neo4jRepository) ClearProject(ctx context.Context, projectID core.ID) e
 	})
 
 	if err != nil {
-		return fmt.Errorf("failed to clear project: %w", err)
+		return fmt.Errorf("failed to clear project %s: %w", projectID, err)
 	}
 
-	logger.Info("cleared project", "project_id", projectID)
+	logger.Info("successfully cleared project", "project_id", projectID)
 	return nil
 }
 
 // FindNodesByType finds all nodes of a specific type
-func (r *Neo4jRepository) FindNodesByType(ctx context.Context, nodeType core.NodeType) ([]core.Node, error) {
+func (r *Neo4jRepository) FindNodesByType(
+	ctx context.Context,
+	nodeType core.NodeType,
+	projectID core.ID,
+) ([]core.Node, error) {
 	session := r.driver.NewSession(ctx, neo4j.SessionConfig{})
 	defer session.Close(ctx)
 
 	query := fmt.Sprintf(`
 		MATCH (n:%s)
+		WHERE n.project_id = $project_id
 		RETURN n, labels(n) as labels
 	`, nodeType)
 
 	results, err := session.ExecuteRead(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
-		result, err := tx.Run(ctx, query, nil)
+		result, err := tx.Run(ctx, query, map[string]any{
+			"project_id": projectID.String(),
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -1030,19 +1057,24 @@ func (r *Neo4jRepository) FindNodesByType(ctx context.Context, nodeType core.Nod
 }
 
 // FindNodesByName finds nodes by name
-func (r *Neo4jRepository) FindNodesByName(ctx context.Context, name string) ([]core.Node, error) {
+func (r *Neo4jRepository) FindNodesByName(
+	ctx context.Context,
+	name string,
+	projectID core.ID,
+) ([]core.Node, error) {
 	session := r.driver.NewSession(ctx, neo4j.SessionConfig{})
 	defer session.Close(ctx)
 
 	query := `
 		MATCH (n)
-		WHERE n.name = $name
+		WHERE n.name = $name AND n.project_id = $project_id
 		RETURN n, labels(n) as labels
 	`
 
 	results, err := session.ExecuteRead(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
 		result, err := tx.Run(ctx, query, map[string]any{
-			"name": name,
+			"name":       name,
+			"project_id": projectID.String(),
 		})
 		if err != nil {
 			return nil, err
@@ -1077,17 +1109,21 @@ func (r *Neo4jRepository) FindNodesByName(ctx context.Context, name string) ([]c
 func (r *Neo4jRepository) FindRelationshipsByType(
 	ctx context.Context,
 	relType core.RelationType,
+	projectID core.ID,
 ) ([]core.Relationship, error) {
 	session := r.driver.NewSession(ctx, neo4j.SessionConfig{})
 	defer session.Close(ctx)
 
 	query := fmt.Sprintf(`
 		MATCH (from)-[r:%s]->(to)
+		WHERE r.project_id = $project_id
 		RETURN r, type(r) as type, from.id as from_id, to.id as to_id
 	`, relType)
 
 	results, err := session.ExecuteRead(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
-		result, err := tx.Run(ctx, query, nil)
+		result, err := tx.Run(ctx, query, map[string]any{
+			"project_id": projectID.String(),
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -1174,8 +1210,22 @@ func (r *Neo4jRepository) recordToNode(record *neo4j.Record) (*core.Node, error)
 		node.Path = path
 	}
 
-	if props, ok := nodeData.Props["properties"].(map[string]any); ok {
-		node.Properties = props
+	// Extract all properties except the system ones
+	systemProps := map[string]bool{
+		"id":   true,
+		"name": true,
+		"path": true,
+	}
+
+	properties := make(map[string]any)
+	for k, v := range nodeData.Props {
+		if !systemProps[k] {
+			properties[k] = v
+		}
+	}
+
+	if len(properties) > 0 {
+		node.Properties = properties
 	}
 
 	return node, nil
@@ -1235,9 +1285,104 @@ func (r *Neo4jRepository) recordToRelationship(record *neo4j.Record) (*core.Rela
 		ToNodeID:   core.ID(toIDStr),
 	}
 
-	if props, ok := relData.Props["properties"].(map[string]any); ok {
-		rel.Properties = props
+	// Extract all properties except the system ones
+	systemProps := map[string]bool{
+		"id": true,
+	}
+
+	properties := make(map[string]any)
+	for k, v := range relData.Props {
+		if !systemProps[k] {
+			properties[k] = v
+		}
+	}
+
+	if len(properties) > 0 {
+		rel.Properties = properties
 	}
 
 	return rel, nil
+}
+
+// serializeComplexProperties converts complex properties to JSON strings for Neo4j compatibility
+func (r *Neo4jRepository) serializeComplexProperties(properties map[string]any) map[string]any {
+	if properties == nil {
+		return nil
+	}
+	serialized := make(map[string]any)
+	for k, v := range properties {
+		serialized[k] = r.serializeValue(v)
+	}
+	return serialized
+}
+
+// serializeValue recursively serializes a single value
+func (r *Neo4jRepository) serializeValue(v any) any {
+	if v == nil {
+		return nil
+	}
+	// Convert time values to UTC
+	if t, ok := v.(time.Time); ok {
+		return t.UTC()
+	}
+	// Check if it's a supported primitive type
+	if primitiveVal := r.handlePrimitiveTypes(v); primitiveVal != nil {
+		return primitiveVal
+	}
+	// Check if it's a supported array type
+	if arrayVal := r.handleArrayTypes(v); arrayVal != nil {
+		return arrayVal
+	}
+	// Everything else needs to be serialized to JSON
+	return r.serializeToJSON(v)
+}
+
+// handlePrimitiveTypes handles Neo4j-supported primitive types
+func (r *Neo4jRepository) handlePrimitiveTypes(v any) any {
+	switch val := v.(type) {
+	case bool, int64, float64, string:
+		return v
+	case int, int8, int16, int32:
+		return reflect.ValueOf(v).Int()
+	case uint, uint8, uint16, uint32:
+		return r.handleUintConversion(reflect.ValueOf(v).Uint(), v)
+	case uint64:
+		return r.handleUintConversion(reflect.ValueOf(v).Uint(), v)
+	case float32:
+		return float64(val)
+	default:
+		return nil
+	}
+}
+
+// handleArrayTypes handles Neo4j-supported array types
+func (r *Neo4jRepository) handleArrayTypes(v any) any {
+	switch val := v.(type) {
+	case []bool, []int64, []float64, []string:
+		return v
+	case []int:
+		result := make([]int64, len(val))
+		for i, item := range val {
+			result[i] = int64(item)
+		}
+		return result
+	default:
+		return nil
+	}
+}
+
+// handleUintConversion safely converts uint values to int64, serializing large values
+func (r *Neo4jRepository) handleUintConversion(uintVal uint64, originalVal any) any {
+	if uintVal > 9223372036854775807 { // max int64
+		return r.serializeToJSON(originalVal)
+	}
+	return int64(uintVal)
+}
+
+// serializeToJSON serializes a value to JSON string
+func (r *Neo4jRepository) serializeToJSON(v any) string {
+	if jsonBytes, err := json.Marshal(v); err == nil {
+		return string(jsonBytes)
+	}
+	return fmt.Sprintf("%v", v)
 }

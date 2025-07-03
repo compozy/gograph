@@ -11,11 +11,11 @@ import (
 	"github.com/compozy/gograph/engine/graph"
 	"github.com/compozy/gograph/engine/infra"
 	"github.com/compozy/gograph/engine/parser"
+	"github.com/compozy/gograph/pkg/config"
 	"github.com/compozy/gograph/pkg/errors"
 	"github.com/compozy/gograph/pkg/logger"
 	"github.com/compozy/gograph/pkg/progress"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
 var analyzeCmd = &cobra.Command{
@@ -58,74 +58,72 @@ The resulting graph allows you to:
 
 		// Wrap the entire command execution with panic recovery
 		return errors.WithRecover("analyze_command", func() error {
+			// Load configuration
+			cfg, err := config.Load("")
+			if err != nil {
+				return fmt.Errorf("failed to load config: %w", err)
+			}
+
+			// Get project ID from config or override flag
+			projectID := core.ID(cfg.Project.ID)
+			if projectIDFlag, err := cmd.Flags().GetString("project-id"); err == nil && projectIDFlag != "" {
+				projectID = core.ID(projectIDFlag)
+			}
+
 			// Check for --no-progress flag
 			noProgress, err := cmd.Flags().GetBool("no-progress")
 			if err != nil {
 				return fmt.Errorf("failed to get no-progress flag: %w", err)
 			}
 
-			// Initialize parser configuration from Viper
+			// Initialize parser configuration from config
 			parserConfig := &parser.Config{
-				IgnoreDirs:     viper.GetStringSlice("parser.ignore_dirs"),
-				IgnoreFiles:    viper.GetStringSlice("parser.ignore_files"),
-				IncludeTests:   viper.GetBool("parser.include_tests"),
-				IncludeVendor:  viper.GetBool("parser.include_vendor"),
-				MaxConcurrency: viper.GetInt("parser.max_concurrency"),
+				IgnoreDirs:     cfg.Analysis.IgnoreDirs,
+				IgnoreFiles:    cfg.Analysis.IgnoreFiles,
+				IncludeTests:   cfg.Analysis.IncludeTests,
+				IncludeVendor:  cfg.Analysis.IncludeVendor,
+				MaxConcurrency: cfg.Analysis.MaxConcurrency,
 			}
 
-			// Initialize analyzer configuration from Viper
+			// Initialize analyzer configuration with defaults
 			analyzerConfig := analyzer.DefaultAnalyzerConfig()
-			if maxDepth := viper.GetInt("analyzer.max_dependency_depth"); maxDepth > 0 {
-				analyzerConfig.MaxDependencyDepth = maxDepth
-			}
-			if ignoreTest := viper.GetBool("analyzer.ignore_test_files"); ignoreTest {
-				analyzerConfig.IgnoreTestFiles = ignoreTest
-			}
-			if ignoreVendor := viper.GetBool("analyzer.ignore_vendor"); ignoreVendor {
-				analyzerConfig.IgnoreVendor = ignoreVendor
-			}
-			if includeMetrics := viper.GetBool("analyzer.include_metrics"); includeMetrics {
-				analyzerConfig.IncludeMetrics = includeMetrics
-			}
-			if workers := viper.GetInt("analyzer.parallel_workers"); workers > 0 {
-				analyzerConfig.ParallelWorkers = workers
-			}
 
-			// Initialize Neo4j configuration from Viper with fallback to defaults
-			neo4jURI := viper.GetString("neo4j.uri")
+			// Initialize Neo4j configuration from config with fallback to defaults
+			neo4jURI := cfg.Neo4j.URI
 			if neo4jURI == "" {
-				neo4jURI = DefaultNeo4jURI // Default only if not set via env vars
+				neo4jURI = DefaultNeo4jURI
 			}
-			neo4jUsername := viper.GetString("neo4j.username")
+			neo4jUsername := cfg.Neo4j.Username
 			if neo4jUsername == "" {
-				neo4jUsername = DefaultNeo4jUsername // Default only if not set via env vars
+				neo4jUsername = DefaultNeo4jUsername
 			}
-			neo4jPassword := viper.GetString("neo4j.password")
+			neo4jPassword := cfg.Neo4j.Password
 			if neo4jPassword == "" {
-				neo4jPassword = DefaultNeo4jPassword // Default only if not set via env vars
+				neo4jPassword = DefaultNeo4jPassword
 			}
 
 			neo4jConfig := &infra.Neo4jConfig{
 				URI:        neo4jURI,
 				Username:   neo4jUsername,
 				Password:   neo4jPassword,
-				Database:   viper.GetString("neo4j.database"),
+				Database:   cfg.Neo4j.Database,
 				MaxRetries: 3,
 				BatchSize:  1000,
 			}
 
 			// Start the analysis
 			if noProgress {
-				return runAnalysisWithoutProgress(projectPath, parserConfig, analyzerConfig, neo4jConfig)
+				return runAnalysisWithoutProgress(projectPath, projectID, parserConfig, analyzerConfig, neo4jConfig)
 			}
 
-			return runAnalysisWithProgress(projectPath, parserConfig, analyzerConfig, neo4jConfig)
+			return runAnalysisWithProgress(projectPath, projectID, parserConfig, analyzerConfig, neo4jConfig)
 		})
 	},
 }
 
 func runAnalysisWithoutProgress(
 	projectPath string,
+	projectID core.ID,
 	parserConfig *parser.Config,
 	analyzerConfig *analyzer.Config,
 	neo4jConfig *infra.Neo4jConfig,
@@ -151,7 +149,6 @@ func runAnalysisWithoutProgress(
 	// -----
 	logger.Info("analyzing project structure")
 	analyzerService := analyzer.NewAnalyzer(analyzerConfig)
-	projectID := core.NewID()
 	analysisInput := &analyzer.AnalysisInput{
 		ProjectID: projectID.String(),
 		Files:     parseResult.Files,
@@ -203,6 +200,7 @@ func runAnalysisWithoutProgress(
 
 func runAnalysisWithProgress(
 	projectPath string,
+	projectID core.ID,
 	parserConfig *parser.Config,
 	analyzerConfig *analyzer.Config,
 	neo4jConfig *infra.Neo4jConfig,
@@ -213,7 +211,6 @@ func runAnalysisWithProgress(
 	var parseResult *parser.ParseResult
 	var report *analyzer.AnalysisReport
 	var graphResult *core.AnalysisResult
-	var projectID core.ID
 
 	// -----
 	// Parsing Phase
@@ -233,7 +230,6 @@ func runAnalysisWithProgress(
 	// -----
 	err = progress.WithProgress("Analyzing code structure", func() error {
 		analyzerService := analyzer.NewAnalyzer(analyzerConfig)
-		projectID = core.NewID()
 		analysisInput := &analyzer.AnalysisInput{
 			ProjectID: projectID.String(),
 			Files:     parseResult.Files,
@@ -298,7 +294,8 @@ func InitAnalyzeCommand() {
 	initAnalyzeOnce.Do(func() {
 		rootCmd.AddCommand(analyzeCmd)
 
-		// Add progress flag
+		// Add flags
 		analyzeCmd.Flags().Bool("no-progress", false, "Disable progress indicators")
+		analyzeCmd.Flags().String("project-id", "", "Override project ID from config file")
 	})
 }

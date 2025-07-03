@@ -79,6 +79,37 @@ func (m *MockServiceAdapter) ExecuteQuery(
 	return nil, args.Error(1)
 }
 
+func (m *MockServiceAdapter) BuildAnalysisResult(
+	ctx context.Context,
+	projectID core.ID,
+	parseResult *parser.ParseResult,
+	analysisReport *analyzer.AnalysisReport,
+) (*core.AnalysisResult, error) {
+	args := m.Called(ctx, projectID, parseResult, analysisReport)
+	if result := args.Get(0); result != nil {
+		return result.(*core.AnalysisResult), args.Error(1)
+	}
+	return nil, args.Error(1)
+}
+
+func (m *MockServiceAdapter) ListProjects(ctx context.Context) ([]core.Project, error) {
+	args := m.Called(ctx)
+	if result := args.Get(0); result != nil {
+		return result.([]core.Project), args.Error(1)
+	}
+	return nil, args.Error(1)
+}
+
+func (m *MockServiceAdapter) ValidateProject(ctx context.Context, projectID core.ID) (bool, error) {
+	args := m.Called(ctx, projectID)
+	return args.Bool(0), args.Error(1)
+}
+
+func (m *MockServiceAdapter) ClearProject(ctx context.Context, projectID core.ID) error {
+	args := m.Called(ctx, projectID)
+	return args.Error(0)
+}
+
 func TestNewServer(t *testing.T) {
 	t.Run("Should create server with valid configuration", func(t *testing.T) {
 		config := mcpconfig.DefaultConfig()

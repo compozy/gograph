@@ -93,9 +93,9 @@ ifeq ($(CI),true)
 	done
 else
 	@command -v docker-compose >/dev/null 2>&1 || { echo >&2 "docker-compose is required but not installed. Aborting."; exit 1; }
-	@docker-compose -f docker-compose.test.yml up -d
+	@docker-compose -f docker-compose.yml up -d
 	@echo "Waiting for Neo4j to be ready..."
-	@docker-compose -f docker-compose.test.yml exec -T neo4j-test wget -q --spider --tries=30 --waitretry=2 http://localhost:7474 || true
+	@docker-compose -f docker-compose.yml exec -T neo4j-test wget -q --spider --tries=30 --waitretry=2 http://localhost:7474 || true
 endif
 	@echo "Test dependencies ready"
 
@@ -105,7 +105,7 @@ test-down:
 ifeq ($(CI),true)
 	@echo "CI environment detected - skipping docker-compose down"
 else
-	@docker-compose -f docker-compose.test.yml down
+	@docker-compose -f docker-compose.yml down
 endif
 
 # Clean test dependencies (including volumes)
@@ -114,7 +114,7 @@ test-clean:
 ifeq ($(CI),true)
 	@echo "CI environment detected - skipping docker-compose cleanup"
 else
-	@docker-compose -f docker-compose.test.yml down -v
+	@docker-compose -f docker-compose.yml down -v
 endif
 
 # Show test logs
@@ -122,7 +122,7 @@ test-logs:
 ifeq ($(CI),true)
 	@echo "CI environment detected - use GitHub Actions logs"
 else
-	@docker-compose -f docker-compose.test.yml logs -f
+	@docker-compose -f docker-compose.yml logs -f
 endif
 
 # -----------------------------------------------------------------------------

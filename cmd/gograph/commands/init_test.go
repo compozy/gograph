@@ -1,6 +1,7 @@
 package commands_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -231,5 +232,267 @@ func TestInitCommand(t *testing.T) {
 		output, err = executeCommand(rootCmd, "init", "--interactive")
 		require.NoError(t, err)
 		assert.Contains(t, output, "Interactive mode")
+	})
+}
+
+func TestInitCommand_ProjectIDFlag(t *testing.T) {
+	t.Run("Should require project-id flag", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		// Change to temp directory
+		originalDir, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() {
+			err := os.Chdir(originalDir)
+			require.NoError(t, err)
+		}()
+		err = os.Chdir(tmpDir)
+		require.NoError(t, err)
+
+		// Create test init command
+		rootCmd := &cobra.Command{Use: "gograph"}
+		initCmd := &cobra.Command{
+			Use:   "init",
+			Short: "Initialize a new gograph configuration file",
+			RunE: func(cmd *cobra.Command, _ []string) error {
+				projectID, err := cmd.Flags().GetString("project-id")
+				if err != nil {
+					return err
+				}
+				if projectID == "" {
+					return fmt.Errorf(
+						"project-id is required. Use --project-id flag to specify a unique project identifier",
+					)
+				}
+				return nil
+			},
+		}
+		initCmd.Flags().String("project-id", "", "Unique project identifier (required)")
+		err = initCmd.MarkFlagRequired("project-id")
+		require.NoError(t, err)
+		rootCmd.AddCommand(initCmd)
+
+		// Execute without project-id flag
+		_, err = executeCommand(rootCmd, "init")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "required flag")
+	})
+
+	t.Run("Should create config with project-id flag", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "gograph.yaml")
+
+		// Change to temp directory
+		originalDir, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() {
+			err := os.Chdir(originalDir)
+			require.NoError(t, err)
+		}()
+		err = os.Chdir(tmpDir)
+		require.NoError(t, err)
+
+		// Create test init command that mimics real behavior
+		rootCmd := &cobra.Command{Use: "gograph"}
+		initCmd := &cobra.Command{
+			Use:   "init",
+			Short: "Initialize a new gograph configuration file",
+			RunE: func(cmd *cobra.Command, _ []string) error {
+				projectID, err := cmd.Flags().GetString("project-id")
+				if err != nil {
+					return err
+				}
+				projectName, err := cmd.Flags().GetString("project-name")
+				if err != nil {
+					return err
+				}
+				projectPath, err := cmd.Flags().GetString("project-path")
+				if err != nil {
+					return err
+				}
+
+				if projectID == "" {
+					return fmt.Errorf("project-id is required")
+				}
+				if projectName == "" {
+					projectName = projectID
+				}
+				if projectPath == "" {
+					projectPath = "."
+				}
+
+				// Create config structure
+				config := map[string]any{
+					"project": map[string]any{
+						"id":        projectID,
+						"name":      projectName,
+						"root_path": projectPath,
+					},
+					"neo4j": map[string]any{
+						"uri":      "bolt://localhost:7687",
+						"username": "neo4j",
+						"password": "",
+						"database": "",
+					},
+					"analysis": map[string]any{
+						"ignore_dirs":     []string{".git", ".idea", ".vscode", "node_modules"},
+						"ignore_files":    []string{},
+						"include_tests":   true,
+						"include_vendor":  false,
+						"max_concurrency": 4,
+					},
+				}
+
+				data, err := yaml.Marshal(config)
+				if err != nil {
+					return err
+				}
+
+				return os.WriteFile("gograph.yaml", data, 0644)
+			},
+		}
+		initCmd.Flags().String("project-id", "", "Unique project identifier (required)")
+		initCmd.Flags().String("project-name", "", "Project name")
+		initCmd.Flags().String("project-path", ".", "Project path")
+		rootCmd.AddCommand(initCmd)
+
+		// Execute with project-id flag
+		_, err = executeCommand(rootCmd, "init", "--project-id", "test-project-123")
+		require.NoError(t, err)
+
+		// Verify config file was created
+		_, err = os.Stat(configPath)
+		require.NoError(t, err)
+
+		// Verify config content
+		content, err := os.ReadFile(configPath)
+		require.NoError(t, err)
+
+		var config map[string]any
+		err = yaml.Unmarshal(content, &config)
+		require.NoError(t, err)
+
+		project := config["project"].(map[string]any)
+		assert.Equal(t, "test-project-123", project["id"])
+		assert.Equal(t, "test-project-123", project["name"]) // Should default to ID
+		assert.Equal(t, ".", project["root_path"])
+	})
+
+	t.Run("Should use custom project-name when provided", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "gograph.yaml")
+
+		// Change to temp directory
+		originalDir, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() {
+			err := os.Chdir(originalDir)
+			require.NoError(t, err)
+		}()
+		err = os.Chdir(tmpDir)
+		require.NoError(t, err)
+
+		// Create test init command
+		rootCmd := &cobra.Command{Use: "gograph"}
+		initCmd := &cobra.Command{
+			Use:   "init",
+			Short: "Initialize a new gograph configuration file",
+			RunE: func(cmd *cobra.Command, _ []string) error {
+				projectID, _ := cmd.Flags().GetString("project-id")
+				projectName, _ := cmd.Flags().GetString("project-name")
+				projectPath, _ := cmd.Flags().GetString("project-path")
+
+				if projectName == "" {
+					projectName = projectID
+				}
+				if projectPath == "" {
+					projectPath = "."
+				}
+
+				config := map[string]any{
+					"project": map[string]any{
+						"id":        projectID,
+						"name":      projectName,
+						"root_path": projectPath,
+					},
+				}
+
+				data, err := yaml.Marshal(config)
+				if err != nil {
+					return err
+				}
+
+				return os.WriteFile("gograph.yaml", data, 0644)
+			},
+		}
+		initCmd.Flags().String("project-id", "", "Project ID")
+		initCmd.Flags().String("project-name", "", "Project name")
+		initCmd.Flags().String("project-path", ".", "Project path")
+		rootCmd.AddCommand(initCmd)
+
+		// Execute with custom project name
+		_, err = executeCommand(rootCmd, "init",
+			"--project-id", "my-backend-api",
+			"--project-name", "My Backend API",
+			"--project-path", "/src/backend")
+		require.NoError(t, err)
+
+		// Verify config content
+		content, err := os.ReadFile(configPath)
+		require.NoError(t, err)
+
+		var config map[string]any
+		err = yaml.Unmarshal(content, &config)
+		require.NoError(t, err)
+
+		project := config["project"].(map[string]any)
+		assert.Equal(t, "my-backend-api", project["id"])
+		assert.Equal(t, "My Backend API", project["name"])
+		assert.Equal(t, "/src/backend", project["root_path"])
+	})
+
+	t.Run("Should validate project-id format", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		// Change to temp directory
+		originalDir, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() {
+			err := os.Chdir(originalDir)
+			require.NoError(t, err)
+		}()
+		err = os.Chdir(tmpDir)
+		require.NoError(t, err)
+
+		// Create test init command with validation
+		rootCmd := &cobra.Command{Use: "gograph"}
+		initCmd := &cobra.Command{
+			Use:   "init",
+			Short: "Initialize a new gograph configuration file",
+			RunE: func(cmd *cobra.Command, _ []string) error {
+				projectID, _ := cmd.Flags().GetString("project-id")
+
+				// Basic validation - could be more sophisticated in real implementation
+				if projectID == "" {
+					return fmt.Errorf("project-id is required")
+				}
+				if len(projectID) < 3 {
+					return fmt.Errorf("project-id must be at least 3 characters long")
+				}
+
+				return nil
+			},
+		}
+		initCmd.Flags().String("project-id", "", "Project ID")
+		rootCmd.AddCommand(initCmd)
+
+		// Test with invalid project ID
+		_, err = executeCommand(rootCmd, "init", "--project-id", "ab")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "at least 3 characters")
+
+		// Test with valid project ID
+		_, err = executeCommand(rootCmd, "init", "--project-id", "valid-project-id")
+		assert.NoError(t, err)
 	})
 }

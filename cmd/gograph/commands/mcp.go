@@ -7,8 +7,11 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/compozy/gograph/engine/analyzer"
+	"github.com/compozy/gograph/engine/graph"
 	"github.com/compozy/gograph/engine/infra"
 	"github.com/compozy/gograph/engine/mcp"
+	"github.com/compozy/gograph/engine/parser"
 	"github.com/compozy/gograph/pkg/logger"
 	mcpconfig "github.com/compozy/gograph/pkg/mcp"
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
@@ -133,13 +136,55 @@ func initializeNeo4jConnection(_ context.Context) (neo4j.DriverWithContext, erro
 }
 
 func createMCPServer(config *mcpconfig.Config) *mcp.Server {
-	// For now, create MCP server with minimal dependencies
-	// TODO(2025-07-02): Complete service initialization when all dependencies are ready
-	logger.Info("Creating MCP server with basic configuration")
+	logger.Info("Creating MCP server with full service configuration")
 
-	// Return a server with nil services for now - this allows the MCP server to start
-	// The actual service integration can be completed once all interfaces are stable
-	return mcp.NewServer(config, nil, nil, nil, nil)
+	// Initialize Neo4j repository
+	neo4jConfig := &infra.Neo4jConfig{
+		URI:        viper.GetString("neo4j.uri"),
+		Username:   viper.GetString("neo4j.username"),
+		Password:   viper.GetString("neo4j.password"),
+		Database:   viper.GetString("neo4j.database"),
+		MaxRetries: 3,
+		BatchSize:  1000,
+	}
+
+	repository, err := infra.NewNeo4jRepository(neo4jConfig)
+	if err != nil {
+		logger.Error("Failed to create Neo4j repository", "error", err)
+		// Return server with nil services as fallback, but log the error
+		return mcp.NewServer(config, nil, nil, nil, nil)
+	}
+
+	// Create Neo4j driver for service adapter
+	driver, err := neo4j.NewDriverWithContext(
+		neo4jConfig.URI,
+		neo4j.BasicAuth(neo4jConfig.Username, neo4jConfig.Password, ""),
+	)
+	if err != nil {
+		logger.Error("Failed to create Neo4j driver", "error", err)
+		return mcp.NewServer(config, nil, nil, nil, nil)
+	}
+
+	// Create core services
+	parserService := parser.NewService(nil) // Uses default config internally
+	analyzerService := analyzer.NewAnalyzer(analyzer.DefaultAnalyzerConfig())
+
+	// Create graph builder and service
+	graphBuilder := graph.NewBuilder(graph.DefaultBuilderConfig())
+	graphService := graph.NewService(
+		parserService,
+		analyzerService,
+		graphBuilder,
+		repository,
+		graph.DefaultServiceConfig(),
+	)
+
+	// Create service adapter
+	serviceAdapter := mcp.NewServiceAdapter(driver, graphService, parserService, analyzerService)
+
+	// Note: For now, pass nils for LLM services since they may not be fully implemented
+	// The core analysis tools will work without them
+	return mcp.NewServer(config, serviceAdapter, nil, nil, nil)
 }
 
 func runMCPServerWithGracefulShutdown(ctx context.Context, cancel context.CancelFunc, server *mcp.Server) {

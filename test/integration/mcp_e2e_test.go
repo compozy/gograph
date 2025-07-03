@@ -389,3 +389,69 @@ func (r *realServiceAdapter) ExecuteQuery(
 ) ([]map[string]any, error) {
 	return r.repository.ExecuteQuery(ctx, query, params)
 }
+
+func (r *realServiceAdapter) BuildAnalysisResult(
+	ctx context.Context,
+	projectID core.ID,
+	parseResult *parser.ParseResult,
+	analysisReport *analyzer.AnalysisReport,
+) (*core.AnalysisResult, error) {
+	builder := graph.NewBuilder(graph.DefaultBuilderConfig())
+	return builder.BuildFromAnalysis(ctx, projectID, parseResult, analysisReport)
+}
+
+func (r *realServiceAdapter) ListProjects(ctx context.Context) ([]core.Project, error) {
+	// Query for all distinct project IDs in the database
+	query := `
+		MATCH (n)
+		WHERE n.project_id IS NOT NULL
+		WITH DISTINCT n.project_id as project_id
+		RETURN project_id
+		ORDER BY project_id
+	`
+	results, err := r.repository.ExecuteQuery(ctx, query, map[string]any{})
+	if err != nil {
+		return nil, err
+	}
+
+	var projects []core.Project
+	for _, result := range results {
+		if projectIDValue, exists := result["project_id"]; exists {
+			if projectIDStr, ok := projectIDValue.(string); ok {
+				projects = append(projects, core.Project{
+					ID:   core.ID(projectIDStr),
+					Name: projectIDStr, // Use ID as name if no separate name stored
+				})
+			}
+		}
+	}
+
+	return projects, nil
+}
+
+func (r *realServiceAdapter) ValidateProject(ctx context.Context, projectID core.ID) (bool, error) {
+	query := `
+		MATCH (n {project_id: $project_id})
+		RETURN count(n) > 0 as exists
+	`
+	results, err := r.repository.ExecuteQuery(ctx, query, map[string]any{
+		"project_id": projectID.String(),
+	})
+	if err != nil {
+		return false, err
+	}
+
+	if len(results) == 0 {
+		return false, nil
+	}
+
+	if exists, ok := results[0]["exists"].(bool); ok {
+		return exists, nil
+	}
+
+	return false, nil
+}
+
+func (r *realServiceAdapter) ClearProject(ctx context.Context, projectID core.ID) error {
+	return r.graphService.ClearProject(ctx, projectID)
+}

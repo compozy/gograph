@@ -25,6 +25,7 @@ type Config struct {
 
 // ProjectConfig represents project-specific configuration
 type ProjectConfig struct {
+	ID       string `mapstructure:"id"`
 	Name     string `mapstructure:"name"`
 	RootPath string `mapstructure:"root_path"`
 }
@@ -50,6 +51,7 @@ type AnalysisConfig struct {
 func DefaultConfig() *Config {
 	return &Config{
 		Project: ProjectConfig{
+			ID:       "",
 			Name:     "default",
 			RootPath: ".",
 		},
@@ -96,6 +98,11 @@ func Load(configPath string) (*Config, error) {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 
+	// Validate required fields
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
+
 	return cfg, nil
 }
 
@@ -124,11 +131,30 @@ func Save(cfg *Config, configPath string) error {
 // ToProject converts the config to a core.Project
 func (c *Config) ToProject(configPath string) *core.Project {
 	return &core.Project{
-		ID:         core.NewID(),
+		ID:         core.ID(c.Project.ID),
 		Name:       c.Project.Name,
 		RootPath:   c.Project.RootPath,
 		Neo4jURI:   c.Neo4j.URI,
 		Neo4jUser:  c.Neo4j.Username,
 		ConfigPath: configPath,
 	}
+}
+
+// Validate ensures the configuration is valid
+func (c *Config) Validate() error {
+	// Project ID is required
+	if c.Project.ID == "" {
+		return fmt.Errorf("project.id is required - run 'gograph init --project-id <your-project-id>' to initialize")
+	}
+
+	// Set defaults for optional fields
+	if c.Project.Name == "" {
+		c.Project.Name = c.Project.ID
+	}
+
+	if c.Project.RootPath == "" {
+		c.Project.RootPath = "."
+	}
+
+	return nil
 }

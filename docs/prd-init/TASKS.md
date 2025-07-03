@@ -143,7 +143,7 @@
 - `.golangci.yml` - Linter configuration for golangci-lint-v2
 - `.github/workflows/ci.yml` - GitHub Actions CI/CD pipeline
 - `scripts/pre-commit` - Pre-commit hook for quality checks
-- `docker-compose.test.yml` - Docker Compose configuration for test dependencies
+- `docker-compose.yml` - Docker Compose configuration for test dependencies
 - Test files for query module components
 - `engine/mcp/` - Complete MCP server implementation ✅ COMPLETED
   - `server.go` - MCP server core with tool registration
@@ -259,9 +259,9 @@
 
 - **Testcontainers Replacement**: Successfully migrated Neo4j testing from testcontainers to docker-compose
 - **Enhanced Test Infrastructure**:
-  - Created `docker-compose.test.yml` with optimized Neo4j 5 Community configuration
+  - Created `docker-compose.yml` with optimized Neo4j 5 Community configuration
   - Added Makefile targets: `test-up`, `test-down`, `test-clean`, `test-logs`
-  - Implemented path resolution for docker-compose.test.yml in test helpers
+  - Implemented path resolution for docker-compose.yml in test helpers
 - **Repository Improvements**:
   - Fixed timezone handling by converting all timestamps to UTC before Neo4j storage
   - Enhanced node creation to support dynamic properties including project_id

@@ -85,6 +85,25 @@ func (s *service) InitializeProject(ctx context.Context, project *core.Project) 
 	return nil
 }
 
+// ClearProject removes all data for a specific project
+func (s *service) ClearProject(ctx context.Context, projectID core.ID) error {
+	logger.Debug("clearing project data", "project_id", projectID)
+	if err := s.repository.ClearProject(ctx, projectID); err != nil {
+		return fmt.Errorf("failed to clear project data: %w", err)
+	}
+	return nil
+}
+
+// ExecuteQuery executes a custom Cypher query and returns results
+func (s *service) ExecuteQuery(ctx context.Context, query string, params map[string]any) ([]map[string]any, error) {
+	logger.Debug("executing custom query", "query", query, "params", params)
+	results, err := s.repository.ExecuteQuery(ctx, query, params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute query: %w", err)
+	}
+	return results, nil
+}
+
 // ImportAnalysis performs complete analysis pipeline and stores results
 func (s *service) ImportAnalysis(
 	ctx context.Context,

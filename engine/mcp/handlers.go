@@ -61,8 +61,11 @@ func (s *Server) HandleAnalyzeProjectInternal(ctx context.Context, input map[str
 		return nil, fmt.Errorf("failed to analyze project: %w", err)
 	}
 
-	// Convert to analysis result
-	analysisResult := convertToAnalysisResult(project, parseResult, analysisReport)
+	// Build proper analysis result with relationships using graph builder
+	analysisResult, err := s.serviceAdapter.BuildAnalysisResult(ctx, project.ID, parseResult, analysisReport)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build analysis result: %w", err)
+	}
 
 	// Import to graph
 	projectGraph, err := s.serviceAdapter.ImportAnalysisResult(ctx, analysisResult)
@@ -2181,4 +2184,86 @@ func (s *Server) AnalyzeTestCoverage(ctx context.Context, projectID, path string
 		TotalLines:   int(totalFunctions),
 		TestFiles:    testFileStructs,
 	}
+}
+
+// HandleListProjectsInternal lists all projects in the database
+func (s *Server) HandleListProjectsInternal(ctx context.Context, _ map[string]any) (*ToolResponse, error) {
+	logger.Info("listing all projects in database")
+
+	projects, err := s.serviceAdapter.ListProjects(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list projects: %w", err)
+	}
+
+	// Convert projects to response format
+	projectData := make([]map[string]any, len(projects))
+	for i := range projects {
+		projectData[i] = map[string]any{
+			"id":   projects[i].ID.String(),
+			"name": projects[i].Name,
+		}
+	}
+
+	result := map[string]any{
+		"projects": projectData,
+		"count":    len(projects),
+	}
+
+	return &ToolResponse{
+		Content: []any{
+			map[string]any{
+				"type": "text",
+				"text": fmt.Sprintf("Found %d projects in database", len(projects)),
+			},
+			map[string]any{
+				"type": "resource",
+				"resource": map[string]any{
+					"uri":  "/projects",
+					"data": result,
+				},
+			},
+		},
+	}, nil
+}
+
+// HandleValidateProjectInternal validates if a project exists in the database
+func (s *Server) HandleValidateProjectInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
+	projectID, ok := input["project_id"].(string)
+	if !ok {
+		return nil, fmt.Errorf("project_id is required")
+	}
+
+	logger.Info("validating project existence", "project_id", projectID)
+
+	exists, err := s.serviceAdapter.ValidateProject(ctx, core.ID(projectID))
+	if err != nil {
+		return nil, fmt.Errorf("failed to validate project: %w", err)
+	}
+
+	result := map[string]any{
+		"project_id": projectID,
+		"exists":     exists,
+		"valid":      exists,
+	}
+
+	status := "does not exist"
+	if exists {
+		status = "exists"
+	}
+
+	return &ToolResponse{
+		Content: []any{
+			map[string]any{
+				"type": "text",
+				"text": fmt.Sprintf("Project %s %s in database", projectID, status),
+			},
+			map[string]any{
+				"type": "resource",
+				"resource": map[string]any{
+					"uri":  fmt.Sprintf("/projects/%s/validation", projectID),
+					"data": result,
+				},
+			},
+		},
+	}, nil
 }

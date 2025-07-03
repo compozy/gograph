@@ -3,7 +3,6 @@ package mcp
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/compozy/gograph/engine/analyzer"
 	"github.com/compozy/gograph/engine/core"
@@ -80,6 +79,18 @@ func (s *serviceAdapter) ImportAnalysisResult(
 	return s.graphService.GetProjectGraph(ctx, result.ProjectID)
 }
 
+// BuildAnalysisResult builds a complete analysis result with relationships using the graph builder
+func (s *serviceAdapter) BuildAnalysisResult(
+	ctx context.Context,
+	projectID core.ID,
+	parseResult *parser.ParseResult,
+	analysisReport *analyzer.AnalysisReport,
+) (*core.AnalysisResult, error) {
+	// Use the graph builder to create proper nodes and relationships
+	builder := graph.NewBuilder(graph.DefaultBuilderConfig())
+	return builder.BuildFromAnalysis(ctx, projectID, parseResult, analysisReport)
+}
+
 // GetProjectStatistics gets project statistics
 func (s *serviceAdapter) GetProjectStatistics(
 	ctx context.Context,
@@ -88,178 +99,96 @@ func (s *serviceAdapter) GetProjectStatistics(
 	return s.graphService.GetProjectStatistics(ctx, projectID)
 }
 
-// ExecuteQuery executes a Cypher query
+// ExecuteQuery executes a custom Cypher query
 func (s *serviceAdapter) ExecuteQuery(
 	ctx context.Context,
 	query string,
 	params map[string]any,
 ) ([]map[string]any, error) {
-	session := s.driver.NewSession(ctx, neo4j.SessionConfig{})
+	return s.graphService.ExecuteQuery(ctx, query, params)
+}
+
+// ListProjects lists all projects in the database
+func (s *serviceAdapter) ListProjects(ctx context.Context) ([]core.Project, error) {
+	session := s.driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeRead})
 	defer session.Close(ctx)
 
-	result, err := session.Run(ctx, query, params)
+	query := `
+		MATCH (n)
+		WHERE n.project_id IS NOT NULL
+		WITH DISTINCT n.project_id as project_id
+		RETURN project_id
+		ORDER BY project_id
+	`
+
+	result, err := session.Run(ctx, query, map[string]any{})
 	if err != nil {
-		return nil, fmt.Errorf("failed to execute query: %w", err)
+		return nil, fmt.Errorf("failed to list projects: %w", err)
 	}
 
-	var results []map[string]any
+	var projects []core.Project
 	for result.Next(ctx) {
 		record := result.Record()
-		row := make(map[string]any)
-		for i, key := range record.Keys {
-			row[key] = record.Values[i]
+		if projectIDValue, exists := record.Get("project_id"); exists {
+			if projectIDStr, ok := projectIDValue.(string); ok {
+				projects = append(projects, core.Project{
+					ID:   core.ID(projectIDStr),
+					Name: projectIDStr, // Use ID as name if no separate name stored
+				})
+			}
 		}
-		results = append(results, row)
 	}
 
-	if err = result.Err(); err != nil {
-		return nil, fmt.Errorf("error processing results: %w", err)
+	if err := result.Err(); err != nil {
+		return nil, fmt.Errorf("failed to process project list results: %w", err)
 	}
 
-	return results, nil
+	return projects, nil
 }
 
-// Helper function to convert parser results to analysis results
-//
-//nolint:funlen // Will be used when full MCP integration is complete
-func convertToAnalysisResult(
-	project *core.Project,
-	parseResult *parser.ParseResult,
-	report *analyzer.AnalysisReport,
-) *core.AnalysisResult {
-	nodes := make([]core.Node, 0)
-	relationships := make([]core.Relationship, 0)
+// ValidateProject checks if a project exists in the database
+func (s *serviceAdapter) ValidateProject(ctx context.Context, projectID core.ID) (bool, error) {
+	session := s.driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeRead})
+	defer session.Close(ctx)
 
-	// Create package nodes
-	packages := make(map[string]bool)
-	for _, file := range parseResult.Files {
-		if !packages[file.Package] {
-			packages[file.Package] = true
-			nodes = append(nodes, core.Node{
-				ID:   core.NewID(),
-				Type: core.NodeTypePackage,
-				Name: file.Package,
-				Path: file.Package,
-				Properties: map[string]any{
-					"project_id": project.ID,
-				},
-				CreatedAt: time.Now(),
-			})
+	query := `
+		MATCH (n {project_id: $project_id})
+		RETURN count(n) > 0 as exists
+		LIMIT 1
+	`
+
+	result, err := session.ExecuteRead(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
+		result, err := tx.Run(ctx, query, map[string]any{
+			"project_id": string(projectID),
+		})
+		if err != nil {
+			return false, err
 		}
 
-		// Create file node
-		fileNode := core.Node{
-			ID:   core.NewID(),
-			Type: core.NodeTypeFile,
-			Name: file.Path,
-			Path: file.Path,
-			Properties: map[string]any{
-				"project_id": project.ID,
-				"package":    file.Package,
-			},
-			CreatedAt: time.Now(),
-		}
-		nodes = append(nodes, fileNode)
-
-		// Create function nodes
-		for i := range file.Functions {
-			fn := &file.Functions[i]
-			nodes = append(nodes, core.Node{
-				ID:   core.NewID(),
-				Type: core.NodeTypeFunction,
-				Name: fn.Name,
-				Path: file.Path,
-				Properties: map[string]any{
-					"project_id":  project.ID,
-					"package":     file.Package,
-					"signature":   fn.Signature,
-					"is_exported": fn.IsExported,
-					"line_start":  fn.LineStart,
-					"line_end":    fn.LineEnd,
-				},
-				CreatedAt: time.Now(),
-			})
+		if result.Next(ctx) {
+			record := result.Record()
+			if existsValue, exists := record.Get("exists"); exists {
+				if existsBool, ok := existsValue.(bool); ok {
+					return existsBool, nil
+				}
+			}
 		}
 
-		// Create struct nodes
-		for _, st := range file.Structs {
-			nodes = append(nodes, core.Node{
-				ID:   core.NewID(),
-				Type: core.NodeTypeStruct,
-				Name: st.Name,
-				Path: file.Path,
-				Properties: map[string]any{
-					"project_id":  project.ID,
-					"package":     file.Package,
-					"is_exported": st.IsExported,
-					"line_start":  st.LineStart,
-					"line_end":    st.LineEnd,
-				},
-				CreatedAt: time.Now(),
-			})
-		}
+		return false, result.Err()
+	})
 
-		// Create interface nodes
-		for _, iface := range file.Interfaces {
-			nodes = append(nodes, core.Node{
-				ID:   core.NewID(),
-				Type: core.NodeTypeInterface,
-				Name: iface.Name,
-				Path: file.Path,
-				Properties: map[string]any{
-					"project_id":  project.ID,
-					"package":     file.Package,
-					"is_exported": iface.IsExported,
-					"line_start":  iface.LineStart,
-					"line_end":    iface.LineEnd,
-				},
-				CreatedAt: time.Now(),
-			})
-		}
+	if err != nil {
+		return false, fmt.Errorf("failed to validate project: %w", err)
 	}
 
-	// Add relationships from analysis report
-	if report != nil && report.DependencyGraph != nil {
-		for _, edge := range report.DependencyGraph.Edges {
-			relationships = append(relationships, core.Relationship{
-				ID:         core.NewID(),
-				Type:       core.RelationDependsOn,
-				FromNodeID: core.ID(edge.From),
-				ToNodeID:   core.ID(edge.To),
-				Properties: map[string]any{
-					"type": edge.Type,
-					"line": edge.Line,
-				},
-				CreatedAt: time.Now(),
-			})
-		}
+	if boolResult, ok := result.(bool); ok {
+		return boolResult, nil
 	}
 
-	return &core.AnalysisResult{
-		ProjectID:      project.ID,
-		Nodes:          nodes,
-		Relationships:  relationships,
-		TotalFiles:     len(parseResult.Files),
-		TotalPackages:  len(packages),
-		TotalFunctions: countFunctions(parseResult.Files),
-		TotalStructs:   countStructs(parseResult.Files),
-		AnalyzedAt:     time.Now(),
-		Duration:       time.Duration(parseResult.ParseTime) * time.Millisecond,
-	}
+	return false, fmt.Errorf("unexpected result type from validate query")
 }
 
-func countFunctions(files []*parser.FileInfo) int {
-	count := 0
-	for _, file := range files {
-		count += len(file.Functions)
-	}
-	return count
-}
-
-func countStructs(files []*parser.FileInfo) int {
-	count := 0
-	for _, file := range files {
-		count += len(file.Structs)
-	}
-	return count
+// ClearProject removes all data for a specific project
+func (s *serviceAdapter) ClearProject(ctx context.Context, projectID core.ID) error {
+	return s.graphService.ClearProject(ctx, projectID)
 }

@@ -1,16 +1,33 @@
+analysis:
+    ignoredirs:
+        - .git
+        - .idea
+        - .vscode
+        - node_modules
+    ignorefiles: []
+    includetests: true
+    includevendor: false
+    maxconcurrency: 4
+analyzer:
+    ignore_test_files: false
+    ignore_vendor: true
+    include_metrics: true
+    max_dependency_depth: 10
+    parallel_workers: 4
+llm:
+    model: gpt-4o
+    openai_api_key: ""
+neo4j:
+    uri: "bolt://localhost:7687"
+    username: "neo4j"
+    password: "password"
 parser:
     ignore_dirs:
         - .git
         - vendor
     ignore_files: []
     include_tests: false
-analyzer:
-    max_dependency_depth: 10
-    ignore_test_files: false
-    ignore_vendor: true
-    include_metrics: true
-    parallel_workers: 4
-neo4j:
-    uri: "bolt://localhost:7687"
-    username: "neo4j"
-    password: "password"
+project:
+    id: gograph
+    name: GoGraph
+    rootpath: ./

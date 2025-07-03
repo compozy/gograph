@@ -35,9 +35,13 @@ type Repository interface {
 	ClearProject(ctx context.Context, projectID core.ID) error
 
 	// Search operations
-	FindNodesByType(ctx context.Context, nodeType core.NodeType) ([]core.Node, error)
-	FindNodesByName(ctx context.Context, name string) ([]core.Node, error)
-	FindRelationshipsByType(ctx context.Context, relType core.RelationType) ([]core.Relationship, error)
+	FindNodesByType(ctx context.Context, nodeType core.NodeType, projectID core.ID) ([]core.Node, error)
+	FindNodesByName(ctx context.Context, name string, projectID core.ID) ([]core.Node, error)
+	FindRelationshipsByType(
+		ctx context.Context,
+		relType core.RelationType,
+		projectID core.ID,
+	) ([]core.Relationship, error)
 }
 
 // Service defines the interface for graph service operations
@@ -45,11 +49,13 @@ type Service interface {
 	// Project operations
 	InitializeProject(ctx context.Context, project *core.Project) error
 	ImportAnalysis(ctx context.Context, projectID core.ID, result *core.AnalysisResult) error
+	ClearProject(ctx context.Context, projectID core.ID) error
 
 	// Query operations
 	GetProjectGraph(ctx context.Context, projectID core.ID) (*ProjectGraph, error)
 	GetNodeWithRelationships(ctx context.Context, nodeID core.ID) (*NodeWithRelations, error)
 	FindPath(ctx context.Context, fromID, toID core.ID) ([]PathSegment, error)
+	ExecuteQuery(ctx context.Context, query string, params map[string]any) ([]map[string]any, error)
 
 	// Analysis operations
 	GetDependencyGraph(ctx context.Context, packageName string) (*DependencyGraph, error)

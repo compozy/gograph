@@ -36,7 +36,15 @@ func TestCLICommands(t *testing.T) {
 		tempDir := t.TempDir()
 		configFile := filepath.Join(tempDir, "test-config.yaml")
 
-		cmd := exec.Command(gographBinary, "init", "--config", configFile, "--force")
+		cmd := exec.Command(
+			gographBinary,
+			"init",
+			"--config",
+			configFile,
+			"--project-id",
+			"cli-test-project",
+			"--force",
+		)
 		output, err := cmd.CombinedOutput()
 
 		assert.NoError(t, err, "init command should succeed: %s", string(output))

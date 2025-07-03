@@ -99,6 +99,7 @@ func (s *Server) registerTools() {
 	s.registerVerificationTools()
 	s.registerPatternTools()
 	s.registerTestTools()
+	s.registerProjectManagementTools()
 }
 
 // registerAnalysisTools registers code analysis tools
@@ -276,6 +277,22 @@ func (s *Server) registerTestTools() {
 		mcp.WithBoolean("detailed", mcp.Description("Include detailed coverage info")),
 	)
 	s.mcpServer.AddTool(checkTestCoverageTool, s.handleCheckTestCoverage)
+}
+
+// registerProjectManagementTools registers project management tools
+func (s *Server) registerProjectManagementTools() {
+	// list_projects tool
+	listProjectsTool := mcp.NewTool("list_projects",
+		mcp.WithDescription("List all projects in the database"),
+	)
+	s.mcpServer.AddTool(listProjectsTool, s.handleListProjects)
+
+	// validate_project tool
+	validateProjectTool := mcp.NewTool("validate_project",
+		mcp.WithDescription("Validate if a project exists in the database"),
+		mcp.WithString("project_id", mcp.Required(), mcp.Description("Project identifier to validate")),
+	)
+	s.mcpServer.AddTool(validateProjectTool, s.handleValidateProject)
 }
 
 // registerResources registers all MCP resources
@@ -797,6 +814,41 @@ func (s *Server) handleCheckTestCoverage(ctx context.Context, req mcp.CallToolRe
 		"project_id": projectID,
 		"path":       path,
 		"detailed":   detailed,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	data, err := json.Marshal(response.Content)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal response: %w", err)
+	}
+
+	return newToolResultJSON(data)
+}
+
+func (s *Server) handleListProjects(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	response, err := s.HandleListProjectsInternal(ctx, map[string]any{})
+	if err != nil {
+		return nil, err
+	}
+
+	data, err := json.Marshal(response.Content)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal response: %w", err)
+	}
+
+	return newToolResultJSON(data)
+}
+
+func (s *Server) handleValidateProject(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	projectID, err := req.RequireString("project_id")
+	if err != nil {
+		return nil, err
+	}
+
+	response, err := s.HandleValidateProjectInternal(ctx, map[string]any{
+		"project_id": projectID,
 	})
 	if err != nil {
 		return nil, err

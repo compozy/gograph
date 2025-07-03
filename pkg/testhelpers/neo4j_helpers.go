@@ -22,10 +22,10 @@ type Neo4jTestContainer struct {
 }
 
 var (
-	// Default test connection details matching docker-compose.test.yml
+	// Default test connection details matching docker-compose.yml
 	defaultTestURI      = "bolt://localhost:7687"
 	defaultTestUsername = "neo4j"
-	defaultTestPassword = "testpassword123!"
+	defaultTestPassword = "password"
 )
 
 // StartNeo4jContainer ensures Neo4j is running via docker-compose or uses existing service in CI
@@ -318,12 +318,12 @@ func getEnvOrDefault(key, defaultValue string) string {
 }
 
 func findDockerComposeFile() string {
-	// Check for docker-compose.test.yml in common locations
+	// Check for docker-compose.yml in common locations
 	candidates := []string{
-		"docker-compose.test.yml",
-		"../docker-compose.test.yml",
-		"../../docker-compose.test.yml",
-		"../../../docker-compose.test.yml",
+		"docker-compose.yml",
+		"../docker-compose.yml",
+		"../../docker-compose.yml",
+		"../../../docker-compose.yml",
 	}
 
 	for _, candidate := range candidates {
@@ -333,5 +333,5 @@ func findDockerComposeFile() string {
 	}
 
 	// Default to the project root
-	return "../../docker-compose.test.yml"
+	return "../../docker-compose.yml"
 }

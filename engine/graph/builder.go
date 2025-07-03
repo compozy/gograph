@@ -217,7 +217,10 @@ func (b *builder) processFile(
 			Type:       core.RelationContains,
 			FromNodeID: pkgID,
 			ToNodeID:   fileID,
-			CreatedAt:  time.Now(),
+			Properties: map[string]any{
+				"project_id": result.ProjectID.String(),
+			},
+			CreatedAt: time.Now(),
 		})
 
 		// Process file contents
@@ -305,7 +308,10 @@ func (b *builder) processImports(result *core.AnalysisResult, file *parser.FileI
 			Type:       core.RelationImports,
 			FromNodeID: fileID,
 			ToNodeID:   impID,
-			CreatedAt:  time.Now(),
+			Properties: map[string]any{
+				"project_id": result.ProjectID.String(),
+			},
+			CreatedAt: time.Now(),
 		})
 	}
 }
@@ -340,7 +346,10 @@ func (b *builder) processFunctions(result *core.AnalysisResult, file *parser.Fil
 			Type:       core.RelationDefines,
 			FromNodeID: fileID,
 			ToNodeID:   fnID,
-			CreatedAt:  time.Now(),
+			Properties: map[string]any{
+				"project_id": result.ProjectID.String(),
+			},
+			CreatedAt: time.Now(),
 		})
 	}
 }
@@ -398,7 +407,10 @@ func (b *builder) createStructNode(
 		Type:       core.RelationDefines,
 		FromNodeID: fileID,
 		ToNodeID:   stID,
-		CreatedAt:  time.Now(),
+		Properties: map[string]any{
+			"project_id": result.ProjectID.String(),
+		},
+		CreatedAt: time.Now(),
 	})
 
 	return stID
@@ -439,7 +451,10 @@ func (b *builder) processStructMethods(
 			Type:       core.RelationBelongsTo,
 			FromNodeID: methodID,
 			ToNodeID:   stID,
-			CreatedAt:  time.Now(),
+			Properties: map[string]any{
+				"project_id": result.ProjectID.String(),
+			},
+			CreatedAt: time.Now(),
 		})
 	}
 }
@@ -492,7 +507,10 @@ func (b *builder) processInterfaces(result *core.AnalysisResult, file *parser.Fi
 			Type:       core.RelationDefines,
 			FromNodeID: fileID,
 			ToNodeID:   ifaceID,
-			CreatedAt:  time.Now(),
+			Properties: map[string]any{
+				"project_id": result.ProjectID.String(),
+			},
+			CreatedAt: time.Now(),
 		})
 	}
 }
@@ -522,7 +540,10 @@ func (b *builder) processConstants(result *core.AnalysisResult, file *parser.Fil
 			Type:       core.RelationDefines,
 			FromNodeID: fileID,
 			ToNodeID:   cnstID,
-			CreatedAt:  time.Now(),
+			Properties: map[string]any{
+				"project_id": result.ProjectID.String(),
+			},
+			CreatedAt: time.Now(),
 		})
 	}
 }
@@ -551,7 +572,10 @@ func (b *builder) processVariables(result *core.AnalysisResult, file *parser.Fil
 			Type:       core.RelationDefines,
 			FromNodeID: fileID,
 			ToNodeID:   varID,
-			CreatedAt:  time.Now(),
+			Properties: map[string]any{
+				"project_id": result.ProjectID.String(),
+			},
+			CreatedAt: time.Now(),
 		})
 	}
 }
@@ -585,6 +609,7 @@ func (b *builder) addFunctionCallRelationships(result *core.AnalysisResult, anal
 				ToNodeID:   calleeID,
 				Properties: map[string]any{
 					"call_count": len(chain.CallSites),
+					"project_id": result.ProjectID.String(),
 				},
 				CreatedAt: time.Now(),
 			}
@@ -615,6 +640,7 @@ func (b *builder) addInterfaceImplementationRelationships(
 				ToNodeID:   interfaceID,
 				Properties: map[string]any{
 					"is_complete": impl.IsComplete,
+					"project_id":  result.ProjectID.String(),
 				},
 				CreatedAt: time.Now(),
 			}
@@ -648,7 +674,10 @@ func (b *builder) addDependencyRelationships(result *core.AnalysisResult, analys
 				Type:       core.RelationDependsOn,
 				FromNodeID: fromID,
 				ToNodeID:   toID,
-				CreatedAt:  time.Now(),
+				Properties: map[string]any{
+					"project_id": result.ProjectID.String(),
+				},
+				CreatedAt: time.Now(),
 			})
 		}
 	}

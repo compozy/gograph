@@ -321,3 +321,15 @@ func (s *llmGraphService) GetDependencyGraph(_ context.Context, _ string) (*grap
 func (s *llmGraphService) GetCallGraph(_ context.Context, _ string) (*graph.CallGraph, error) {
 	return nil, fmt.Errorf("not implemented in LLM service")
 }
+
+func (s *llmGraphService) ClearProject(ctx context.Context, projectID core.ID) error {
+	return s.repository.ClearProject(ctx, projectID)
+}
+
+func (s *llmGraphService) ExecuteQuery(
+	ctx context.Context,
+	query string,
+	params map[string]any,
+) ([]map[string]any, error) {
+	return s.repository.ExecuteQuery(ctx, query, params)
+}

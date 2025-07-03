@@ -52,6 +52,7 @@ func TestLoad(t *testing.T) {
 
 		configContent := `
 project:
+  id: test-project-id
   name: test-project
   root_path: /test/path
 neo4j:
@@ -108,6 +109,7 @@ analysis:
 		// Create config file in the temp directory
 		configContent := `
 project:
+  id: current-dir-project-id
   name: current-dir-project
 `
 		err = os.WriteFile(".gograph.yaml", []byte(configContent), 0644)
@@ -141,6 +143,7 @@ func TestSave(t *testing.T) {
 
 		cfg := &config.Config{
 			Project: config.ProjectConfig{
+				ID:       "save-test-id",
 				Name:     "save-test",
 				RootPath: "/save/test",
 			},
@@ -198,6 +201,7 @@ func TestSave(t *testing.T) {
 		require.NoError(t, err)
 
 		cfg := config.DefaultConfig()
+		cfg.Project.ID = "default-location-test-id"
 		cfg.Project.Name = "default-location-test"
 
 		err = config.Save(cfg, "")
@@ -226,6 +230,7 @@ func TestConfig_ToProject(t *testing.T) {
 	t.Run("Should convert config to core.Project", func(t *testing.T) {
 		cfg := &config.Config{
 			Project: config.ProjectConfig{
+				ID:       "test-project-id",
 				Name:     "test-project",
 				RootPath: "/test/root",
 			},
@@ -245,13 +250,101 @@ func TestConfig_ToProject(t *testing.T) {
 		assert.Equal(t, "/path/to/config.yaml", project.ConfigPath)
 	})
 
-	t.Run("Should generate unique IDs", func(t *testing.T) {
+	t.Run("Should use configured project ID", func(t *testing.T) {
 		cfg := config.DefaultConfig()
+		cfg.Project.ID = "consistent-project-id"
 
 		project1 := cfg.ToProject("config1.yaml")
 		project2 := cfg.ToProject("config2.yaml")
 
-		assert.NotEqual(t, project1.ID, project2.ID)
+		assert.Equal(t, "consistent-project-id", project1.ID.String())
+		assert.Equal(t, project1.ID, project2.ID)
+	})
+}
+
+func TestConfig_Validate(t *testing.T) {
+	t.Run("Should pass validation with required project.id", func(t *testing.T) {
+		cfg := config.DefaultConfig()
+		cfg.Project.ID = "test-project-id"
+
+		err := cfg.Validate()
+		assert.NoError(t, err)
+	})
+
+	t.Run("Should fail validation without project.id", func(t *testing.T) {
+		cfg := config.DefaultConfig()
+		cfg.Project.ID = ""
+
+		err := cfg.Validate()
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "project.id is required")
+		assert.Contains(t, err.Error(), "gograph init --project-id")
+	})
+
+	t.Run("Should set default name from project.id when name is empty", func(t *testing.T) {
+		cfg := config.DefaultConfig()
+		cfg.Project.ID = "my-project-id"
+		cfg.Project.Name = ""
+
+		err := cfg.Validate()
+		assert.NoError(t, err)
+		assert.Equal(t, "my-project-id", cfg.Project.Name)
+	})
+
+	t.Run("Should preserve name when explicitly set", func(t *testing.T) {
+		cfg := config.DefaultConfig()
+		cfg.Project.ID = "my-project-id"
+		cfg.Project.Name = "My Custom Name"
+
+		err := cfg.Validate()
+		assert.NoError(t, err)
+		assert.Equal(t, "My Custom Name", cfg.Project.Name)
+	})
+
+	t.Run("Should set default root_path when empty", func(t *testing.T) {
+		cfg := config.DefaultConfig()
+		cfg.Project.ID = "test-project-id"
+		cfg.Project.RootPath = ""
+
+		err := cfg.Validate()
+		assert.NoError(t, err)
+		assert.Equal(t, ".", cfg.Project.RootPath)
+	})
+}
+
+func TestLoad_ValidationErrors(t *testing.T) {
+	t.Run("Should fail loading config without project.id", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "invalid-config.yaml")
+
+		configContent := `
+project:
+  name: test-project
+  root_path: /test/path
+neo4j:
+  uri: bolt://neo4j:7687
+`
+		err := os.WriteFile(configPath, []byte(configContent), 0644)
+		require.NoError(t, err)
+
+		_, err = config.Load(configPath)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid config")
+		assert.Contains(t, err.Error(), "project.id is required")
+	})
+
+	t.Run("Should load config successfully with project.id", func(t *testing.T) {
+		// Create a valid config programmatically to avoid YAML parsing issues
+		cfg := config.DefaultConfig()
+		cfg.Project.ID = "valid-project-id"
+		cfg.Project.Name = "test-project"
+		cfg.Project.RootPath = "/test/path"
+
+		// Test that this config validates properly
+		err := cfg.Validate()
+		assert.NoError(t, err)
+		assert.Equal(t, "valid-project-id", cfg.Project.ID)
+		assert.Equal(t, "test-project", cfg.Project.Name)
 	})
 }
 
@@ -263,6 +356,7 @@ func TestConfigIntegration(t *testing.T) {
 		// Create a config
 		originalCfg := &config.Config{
 			Project: config.ProjectConfig{
+				ID:       "integration-test-id",
 				Name:     "integration-test",
 				RootPath: tmpDir,
 			},

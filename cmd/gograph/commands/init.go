@@ -5,37 +5,37 @@ import (
 	"os"
 	"sync"
 
+	"github.com/compozy/gograph/pkg/config"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
 // initCmd represents the init command
 var initCmd = &cobra.Command{
 	Use:   "init",
-	Short: "Initialize a new gograph configuration file",
+	Short: "Initialize a new gograph project configuration file",
 	Long: `Initialize creates a new gograph.yaml configuration file in the current
-directory with default settings. This file allows you to customize parser
-and analyzer behavior, Neo4j connection settings, and more.
+directory with project-specific settings. This file allows you to customize 
+project identification, parser and analyzer behavior, Neo4j connection settings, and more.
 
 The configuration file includes:
+  • Project identification (ID, name, path)
   • Parser settings (ignore patterns, concurrency)
   • Analyzer settings (dependency depth, metrics)
   • Neo4j connection details
-  • Logging preferences
 
-Example:
-  gograph init
-
-This will create a gograph.yaml file with sensible defaults that you can
-then customize according to your needs.`,
-	Example: `  # Create a default configuration file
-  gograph init
+A unique project-id is required to isolate your project's data from other projects
+in the same Neo4j database. This enables multiple projects to coexist safely.`,
+	Example: `  # Initialize a new project with a unique ID
+  gograph init --project-id "my-webapp"
+  
+  # Initialize with custom name and path
+  gograph init --project-id "backend-api" --project-name "Backend API" --project-path "./src"
   
   # After creation, edit gograph.yaml to customize:
   # - Neo4j connection details
   # - Parser ignore patterns
   # - Analysis depth and metrics`,
-	RunE: func(_ *cobra.Command, _ []string) error {
+	RunE: func(cmd *cobra.Command, _ []string) error {
 		configFile := "gograph.yaml"
 		if cfgFile != "" {
 			configFile = cfgFile
@@ -46,30 +46,50 @@ then customize according to your needs.`,
 			return fmt.Errorf("config file %s already exists. Use --force to overwrite", configFile)
 		}
 
-		// Set default configuration values
-		viper.Set("neo4j.uri", DefaultNeo4jURI)
-		viper.Set("neo4j.username", DefaultNeo4jUsername)
-		viper.Set("neo4j.password", DefaultNeo4jPassword)
-		viper.Set("parser.ignore_dirs", []string{".git", "vendor", "node_modules"})
-		viper.Set("parser.ignore_files", []string{})
-		viper.Set("parser.include_tests", false)
-		viper.Set("parser.max_concurrency", 4)
-		viper.Set("analyzer.max_depth", 10)
-		viper.Set("analyzer.detect_circular_deps", true)
-
-		// Set configuration file path
-		viper.SetConfigFile(configFile)
-
-		// Write config file
-		err := viper.WriteConfigAs(configFile)
-
+		// Get project details from flags
+		projectID, err := cmd.Flags().GetString("project-id")
 		if err != nil {
+			return fmt.Errorf("failed to get project-id flag: %w", err)
+		}
+		projectName, err := cmd.Flags().GetString("project-name")
+		if err != nil {
+			return fmt.Errorf("failed to get project-name flag: %w", err)
+		}
+		projectPath, err := cmd.Flags().GetString("project-path")
+		if err != nil {
+			return fmt.Errorf("failed to get project-path flag: %w", err)
+		}
+
+		// Validate required project ID
+		if projectID == "" {
+			return fmt.Errorf("project-id is required. Use --project-id flag to specify a unique project identifier")
+		}
+
+		// Set defaults for optional fields
+		if projectName == "" {
+			projectName = projectID
+		}
+		if projectPath == "" {
+			projectPath = "."
+		}
+
+		// Create configuration with user-provided values
+		cfg := config.DefaultConfig()
+		cfg.Project.ID = projectID
+		cfg.Project.Name = projectName
+		cfg.Project.RootPath = projectPath
+
+		// Save configuration to file
+		if err := config.Save(cfg, configFile); err != nil {
 			return fmt.Errorf("failed to write config file: %w", err)
 		}
 
 		fmt.Printf("✓ Configuration file '%s' created successfully\n", configFile)
+		fmt.Printf("✓ Project ID: %s\n", projectID)
+		fmt.Printf("✓ Project Name: %s\n", projectName)
+		fmt.Printf("✓ Project Path: %s\n", projectPath)
 		fmt.Println("\nNext steps:")
-		fmt.Println("1. Edit the config file to configure Neo4j connection")
+		fmt.Println("1. Edit the config file to configure Neo4j connection if needed")
 		fmt.Println("2. Run 'gograph analyze <path>' to analyze your project")
 		return nil
 	},
@@ -84,6 +104,12 @@ var (
 func InitInitCommand() {
 	initInitOnce.Do(func() {
 		initCmd.Flags().BoolVar(&forceOverwrite, "force", false, "Force overwrite existing config file")
+		initCmd.Flags().String("project-id", "", "Unique project identifier (required)")
+		initCmd.Flags().String("project-name", "", "Human-readable project name (defaults to project-id)")
+		initCmd.Flags().String("project-path", ".", "Project root path (defaults to current directory)")
+		if err := initCmd.MarkFlagRequired("project-id"); err != nil {
+			panic(fmt.Sprintf("failed to mark project-id as required: %v", err))
+		}
 		rootCmd.AddCommand(initCmd)
 	})
 }

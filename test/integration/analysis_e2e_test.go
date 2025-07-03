@@ -270,7 +270,7 @@ func TestAnalysisPerformance(t *testing.T) {
 		err = repository.CreateNodes(ctx, nodes)
 		require.NoError(t, err)
 
-		// Verify all nodes were created
+		// Verify all nodes were created and wait for them to be fully committed
 		query := "MATCH (n:Function) WHERE n.project_id = $project_id RETURN count(n) as count"
 		results, err := repository.ExecuteQuery(ctx, query, map[string]any{
 			"project_id": string(projectID),
@@ -278,28 +278,80 @@ func TestAnalysisPerformance(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, int64(1000), results[0]["count"])
 
-		// Create relationships in batch
-		relationships := make([]core.Relationship, 500)
-		for i := 0; i < 500; i++ {
-			relationships[i] = core.Relationship{
-				ID:         core.NewID(),
-				Type:       core.RelationCalls,
-				FromNodeID: nodes[i].ID,
-				ToNodeID:   nodes[i+500].ID,
-				Properties: map[string]any{
-					"project_id": string(projectID),
-				},
+		// Verify specific nodes exist before creating relationships
+		// This ensures nodes are properly indexed and accessible
+		verifyQuery := `
+			MATCH (n:Function) 
+			WHERE n.project_id = $project_id AND n.id IN $node_ids
+			RETURN count(n) as count
+		`
+		// Check a sample of node IDs
+		sampleNodeIDs := []string{
+			nodes[0].ID.String(),
+			nodes[499].ID.String(),
+			nodes[500].ID.String(),
+			nodes[999].ID.String(),
+		}
+		verifyResults, err := repository.ExecuteQuery(ctx, verifyQuery, map[string]any{
+			"project_id": string(projectID),
+			"node_ids":   sampleNodeIDs,
+		})
+		require.NoError(t, err)
+		require.Equal(t, int64(4), verifyResults[0]["count"], "Sample nodes should exist before creating relationships")
+
+		// Create relationships in smaller batches to avoid issues
+		const relationshipBatchSize = 100
+
+		for batch := 0; batch < 5; batch++ {
+			relationships := make([]core.Relationship, relationshipBatchSize)
+			for i := 0; i < relationshipBatchSize; i++ {
+				idx := batch*relationshipBatchSize + i
+				relationships[i] = core.Relationship{
+					ID:         core.NewID(),
+					Type:       core.RelationCalls,
+					FromNodeID: nodes[idx].ID,
+					ToNodeID:   nodes[idx+500].ID,
+					Properties: map[string]any{
+						"project_id": string(projectID),
+					},
+				}
 			}
+
+			// Create this batch of relationships
+			err = repository.CreateRelationships(ctx, relationships)
+			if err != nil {
+				// Log detailed error information for debugging
+				t.Logf("Failed to create relationship batch %d: %v", batch, err)
+
+				// Check if the nodes still exist
+				checkQuery := `
+					MATCH (n:Function) 
+					WHERE n.project_id = $project_id AND n.id = $node_id
+					RETURN n.id as id, n.name as name
+				`
+				// Check the first failing relationship's nodes
+				fromResult, _ := repository.ExecuteQuery(ctx, checkQuery, map[string]any{
+					"project_id": string(projectID),
+					"node_id":    relationships[0].FromNodeID.String(),
+				})
+				toResult, _ := repository.ExecuteQuery(ctx, checkQuery, map[string]any{
+					"project_id": string(projectID),
+					"node_id":    relationships[0].ToNodeID.String(),
+				})
+
+				t.Logf("From node exists: %v", len(fromResult) > 0)
+				t.Logf("To node exists: %v", len(toResult) > 0)
+			}
+			require.NoError(t, err, "Failed to create relationship batch %d", batch)
 		}
 
-		err = repository.CreateRelationships(ctx, relationships)
+		// Verify relationships were created
+		query = "MATCH ()-[r:CALLS]->() WHERE r.project_id = $project_id RETURN count(r) as count"
+		results, err = repository.ExecuteQuery(ctx, query, map[string]any{
+			"project_id": string(projectID),
+		})
 		require.NoError(t, err)
-
-		// Verify relationships - check all CALLS relationships since we just created them
-		query = "MATCH ()-[r:CALLS]->() RETURN count(r) as count"
-		results, err = repository.ExecuteQuery(ctx, query, map[string]any{})
-		require.NoError(t, err)
-		assert.GreaterOrEqual(t, results[0]["count"].(int64), int64(500))
+		assert.Equal(t, int64(500), results[0]["count"], "All relationships should be created")
 
 		// Clean up
 		err = repository.ClearProject(ctx, projectID)

@@ -19,9 +19,20 @@ type ServiceAdapter interface {
 
 	// Graph operations
 	InitializeProject(ctx context.Context, project *core.Project) error
+	BuildAnalysisResult(
+		ctx context.Context,
+		projectID core.ID,
+		parseResult *parser.ParseResult,
+		analysisReport *analyzer.AnalysisReport,
+	) (*core.AnalysisResult, error)
 	ImportAnalysisResult(ctx context.Context, result *core.AnalysisResult) (*graph.ProjectGraph, error)
 	GetProjectStatistics(ctx context.Context, projectID core.ID) (*graph.ProjectStatistics, error)
 	ExecuteQuery(ctx context.Context, query string, params map[string]any) ([]map[string]any, error)
+
+	// Project management operations
+	ListProjects(ctx context.Context) ([]core.Project, error)
+	ValidateProject(ctx context.Context, projectID core.ID) (bool, error)
+	ClearProject(ctx context.Context, projectID core.ID) error
 }
 
 // MCPServer defines the interface for the MCP server

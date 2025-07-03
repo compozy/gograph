@@ -370,3 +370,217 @@ func TestNeo4jRepository_BulkImport(t *testing.T) {
 		assert.Equal(t, int64(1), relResult[0]["count"])
 	})
 }
+
+func TestNeo4jRepository_ProjectIsolation(t *testing.T) {
+	t.Run("Should completely isolate data between projects", func(t *testing.T) {
+		repo, _, ctx := setupNeo4jTestWithProjectID(t)
+
+		// Create two separate projects with unique IDs
+		projectID1 := generateUniqueTestID()
+		projectID2 := generateUniqueTestID()
+		projectUUID1 := core.ID(projectID1)
+		projectUUID2 := core.ID(projectID2)
+
+		// Create nodes for project 1
+		nodes1 := []core.Node{
+			{
+				ID:   core.NewID(),
+				Type: core.NodeTypeFunction,
+				Name: "Function1",
+				Properties: map[string]any{
+					"project_id": projectID1,
+					"package":    "project1.pkg",
+				},
+			},
+			{
+				ID:   core.NewID(),
+				Type: core.NodeTypeStruct,
+				Name: "Struct1",
+				Properties: map[string]any{
+					"project_id": projectID1,
+					"package":    "project1.pkg",
+				},
+			},
+		}
+
+		// Create nodes for project 2
+		nodes2 := []core.Node{
+			{
+				ID:   core.NewID(),
+				Type: core.NodeTypeFunction,
+				Name: "Function2",
+				Properties: map[string]any{
+					"project_id": projectID2,
+					"package":    "project2.pkg",
+				},
+			},
+			{
+				ID:   core.NewID(),
+				Type: core.NodeTypeInterface,
+				Name: "Interface2",
+				Properties: map[string]any{
+					"project_id": projectID2,
+					"package":    "project2.pkg",
+				},
+			},
+		}
+
+		// Create relationships for project 1
+		relationships1 := []core.Relationship{
+			{
+				ID:         core.NewID(),
+				Type:       core.RelationType("CONTAINS"),
+				FromNodeID: nodes1[0].ID,
+				ToNodeID:   nodes1[1].ID,
+				Properties: map[string]any{
+					"project_id": projectID1,
+				},
+			},
+		}
+
+		// Create relationships for project 2
+		relationships2 := []core.Relationship{
+			{
+				ID:         core.NewID(),
+				Type:       core.RelationType("IMPLEMENTS"),
+				FromNodeID: nodes2[0].ID,
+				ToNodeID:   nodes2[1].ID,
+				Properties: map[string]any{
+					"project_id": projectID2,
+				},
+			},
+		}
+
+		// Import project 1 data
+		result1 := &core.AnalysisResult{
+			ProjectID:     projectUUID1,
+			Nodes:         nodes1,
+			Relationships: relationships1,
+		}
+		err := repo.ImportAnalysisResult(ctx, result1)
+		require.NoError(t, err)
+
+		// Import project 2 data
+		result2 := &core.AnalysisResult{
+			ProjectID:     projectUUID2,
+			Nodes:         nodes2,
+			Relationships: relationships2,
+		}
+		err = repo.ImportAnalysisResult(ctx, result2)
+		require.NoError(t, err)
+
+		// Verify project 1 data isolation
+		t.Run("Project 1 should only see its own data", func(t *testing.T) {
+			// Check nodes
+			query := `MATCH (n) WHERE n.project_id = $project_id RETURN labels(n)[0] as type, n.name as name`
+			result, err := repo.ExecuteQuery(ctx, query, map[string]any{
+				"project_id": projectID1,
+			})
+			require.NoError(t, err)
+			require.Len(t, result, 3) // 2 nodes + 1 ProjectMetadata
+
+			// Check that only project 1 data is returned
+			nodeNames := make([]string, 0)
+			for _, row := range result {
+				if name, ok := row["name"].(string); ok && name != "" {
+					nodeNames = append(nodeNames, name)
+				}
+			}
+			assert.Contains(t, nodeNames, "Function1")
+			assert.Contains(t, nodeNames, "Struct1")
+			assert.NotContains(t, nodeNames, "Function2")
+			assert.NotContains(t, nodeNames, "Interface2")
+
+			// Check relationships
+			relQuery := `MATCH ()-[r]->() WHERE r.project_id = $project_id RETURN type(r) as rel_type`
+			relResult, err := repo.ExecuteQuery(ctx, relQuery, map[string]any{
+				"project_id": projectID1,
+			})
+			require.NoError(t, err)
+			require.Len(t, relResult, 1)
+			assert.Equal(t, "CONTAINS", relResult[0]["rel_type"])
+		})
+
+		// Verify project 2 data isolation
+		t.Run("Project 2 should only see its own data", func(t *testing.T) {
+			// Check nodes
+			query := `MATCH (n) WHERE n.project_id = $project_id RETURN labels(n)[0] as type, n.name as name`
+			result, err := repo.ExecuteQuery(ctx, query, map[string]any{
+				"project_id": projectID2,
+			})
+			require.NoError(t, err)
+			require.Len(t, result, 3) // 2 nodes + 1 ProjectMetadata
+
+			// Check that only project 2 data is returned
+			nodeNames := make([]string, 0)
+			for _, row := range result {
+				if name, ok := row["name"].(string); ok && name != "" {
+					nodeNames = append(nodeNames, name)
+				}
+			}
+			assert.Contains(t, nodeNames, "Function2")
+			assert.Contains(t, nodeNames, "Interface2")
+			assert.NotContains(t, nodeNames, "Function1")
+			assert.NotContains(t, nodeNames, "Struct1")
+
+			// Check relationships
+			relQuery := `MATCH ()-[r]->() WHERE r.project_id = $project_id RETURN type(r) as rel_type`
+			relResult, err := repo.ExecuteQuery(ctx, relQuery, map[string]any{
+				"project_id": projectID2,
+			})
+			require.NoError(t, err)
+			require.Len(t, relResult, 1)
+			assert.Equal(t, "IMPLEMENTS", relResult[0]["rel_type"])
+		})
+
+		// Verify repository methods respect project isolation
+		t.Run("Repository methods should filter by project_id", func(t *testing.T) {
+			// Test FindNodesByType for project 1
+			project1Functions, err := repo.FindNodesByType(ctx, core.NodeTypeFunction, projectUUID1)
+			require.NoError(t, err)
+			require.Len(t, project1Functions, 1)
+			assert.Equal(t, "Function1", project1Functions[0].Name)
+
+			// Test FindNodesByType for project 2
+			project2Functions, err := repo.FindNodesByType(ctx, core.NodeTypeFunction, projectUUID2)
+			require.NoError(t, err)
+			require.Len(t, project2Functions, 1)
+			assert.Equal(t, "Function2", project2Functions[0].Name)
+
+			// Test FindNodesByName for project 1
+			project1Named, err := repo.FindNodesByName(ctx, "Function1", projectUUID1)
+			require.NoError(t, err)
+			require.Len(t, project1Named, 1)
+			assert.Equal(t, "Function1", project1Named[0].Name)
+
+			// Test FindNodesByName should not find nodes from other projects
+			crossProject, err := repo.FindNodesByName(ctx, "Function2", projectUUID1)
+			require.NoError(t, err)
+			assert.Len(t, crossProject, 0) // Should not find Function2 in project1
+		})
+
+		// Verify ClearProject only affects target project
+		t.Run("ClearProject should only affect target project", func(t *testing.T) {
+			// Clear project 1
+			err := repo.ClearProject(ctx, projectUUID1)
+			require.NoError(t, err)
+
+			// Verify project 1 data is gone
+			query1 := `MATCH (n) WHERE n.project_id = $project_id RETURN count(n) as count`
+			result1, err := repo.ExecuteQuery(ctx, query1, map[string]any{
+				"project_id": projectID1,
+			})
+			require.NoError(t, err)
+			require.Len(t, result1, 1)
+			assert.Equal(t, int64(0), result1[0]["count"])
+
+			// Verify project 2 data is still there
+			result2, err := repo.ExecuteQuery(ctx, query1, map[string]any{
+				"project_id": projectID2,
+			})
+			require.NoError(t, err)
+			require.Len(t, result2, 1)
+			assert.Equal(t, int64(3), result2[0]["count"]) // 2 nodes + 1 ProjectMetadata
+		})
+	})
+}
