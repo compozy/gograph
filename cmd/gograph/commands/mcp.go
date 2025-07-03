@@ -17,7 +17,6 @@ import (
 	"github.com/compozy/gograph/pkg/logger"
 	mcpconfig "github.com/compozy/gograph/pkg/mcp"
 	"github.com/joho/godotenv"
-	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -88,13 +87,8 @@ func runServeMCP(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	driver, err := initializeNeo4jConnection(ctx)
-	if err != nil {
-		return err
-	}
-	defer driver.Close(ctx)
-
-	server := createMCPServer(config)
+	server, cleanup := createMCPServer(config)
+	defer cleanup()
 
 	runMCPServerWithGracefulShutdown(ctx, cancel, server)
 	return nil
@@ -122,28 +116,7 @@ func applyCommandLineFlagOverrides(cmd *cobra.Command, config *mcpconfig.Config)
 	}
 }
 
-func initializeNeo4jConnection(_ context.Context) (neo4j.DriverWithContext, error) {
-	neo4jConfig := &infra.Neo4jConfig{
-		URI:        viper.GetString("neo4j.uri"),
-		Username:   viper.GetString("neo4j.username"),
-		Password:   viper.GetString("neo4j.password"),
-		Database:   viper.GetString("neo4j.database"),
-		MaxRetries: 3,
-		BatchSize:  1000,
-	}
-
-	driver, err := neo4j.NewDriverWithContext(
-		neo4jConfig.URI,
-		neo4j.BasicAuth(neo4jConfig.Username, neo4jConfig.Password, ""),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to Neo4j: %w", err)
-	}
-
-	return driver, nil
-}
-
-func createMCPServer(config *mcpconfig.Config) *mcp.Server {
+func createMCPServer(config *mcpconfig.Config) (*mcp.Server, func()) {
 	logger.Info("Creating MCP server with full service configuration")
 
 	// Initialize Neo4j repository
@@ -160,17 +133,7 @@ func createMCPServer(config *mcpconfig.Config) *mcp.Server {
 	if err != nil {
 		logger.Error("Failed to create Neo4j repository", "error", err)
 		// Return server with nil services as fallback, but log the error
-		return mcp.NewServer(config, nil, nil, nil, nil)
-	}
-
-	// Create Neo4j driver for service adapter
-	driver, err := neo4j.NewDriverWithContext(
-		neo4jConfig.URI,
-		neo4j.BasicAuth(neo4jConfig.Username, neo4jConfig.Password, ""),
-	)
-	if err != nil {
-		logger.Error("Failed to create Neo4j driver", "error", err)
-		return mcp.NewServer(config, nil, nil, nil, nil)
+		return mcp.NewServer(config, nil, nil, nil, nil), func() {}
 	}
 
 	// Create core services
@@ -187,8 +150,8 @@ func createMCPServer(config *mcpconfig.Config) *mcp.Server {
 		graph.DefaultServiceConfig(),
 	)
 
-	// Create service adapter
-	serviceAdapter := mcp.NewServiceAdapter(driver, graphService, parserService, analyzerService)
+	// Create service adapter using repository instead of driver
+	serviceAdapter := mcp.NewServiceAdapter(repository, graphService, parserService, analyzerService)
 
 	// Initialize LLM service if OpenAI API key is available
 	var llmService llm.CypherTranslator
@@ -213,7 +176,16 @@ func createMCPServer(config *mcpconfig.Config) *mcp.Server {
 	}
 
 	// TODO: Initialize context generator and query builder when implemented
-	return mcp.NewServer(config, serviceAdapter, llmService, nil, nil)
+	server := mcp.NewServer(config, serviceAdapter, llmService, nil, nil)
+
+	// Return cleanup function to close repository
+	cleanup := func() {
+		if err := repository.Close(); err != nil {
+			logger.Error("Failed to close repository", "error", err)
+		}
+	}
+
+	return server, cleanup
 }
 
 func runMCPServerWithGracefulShutdown(ctx context.Context, cancel context.CancelFunc, server *mcp.Server) {

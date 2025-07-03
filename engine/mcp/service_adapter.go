@@ -8,12 +8,11 @@ import (
 	"github.com/compozy/gograph/engine/core"
 	"github.com/compozy/gograph/engine/graph"
 	"github.com/compozy/gograph/engine/parser"
-	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
 )
 
 // serviceAdapter implements ServiceAdapter interface
 type serviceAdapter struct {
-	driver          neo4j.DriverWithContext
+	repository      graph.Repository
 	graphService    graph.Service
 	parserService   parser.Parser
 	analyzerService analyzer.Analyzer
@@ -21,13 +20,13 @@ type serviceAdapter struct {
 
 // NewServiceAdapter creates a new service adapter
 func NewServiceAdapter(
-	driver neo4j.DriverWithContext,
+	repository graph.Repository,
 	graphService graph.Service,
 	parserService parser.Parser,
 	analyzerService analyzer.Analyzer,
 ) ServiceAdapter {
 	return &serviceAdapter{
-		driver:          driver,
+		repository:      repository,
 		graphService:    graphService,
 		parserService:   parserService,
 		analyzerService: analyzerService,
@@ -105,14 +104,11 @@ func (s *serviceAdapter) ExecuteQuery(
 	query string,
 	params map[string]any,
 ) ([]map[string]any, error) {
-	return s.graphService.ExecuteQuery(ctx, query, params)
+	return s.repository.ExecuteQuery(ctx, query, params)
 }
 
 // ListProjects lists all projects in the database
 func (s *serviceAdapter) ListProjects(ctx context.Context) ([]core.Project, error) {
-	session := s.driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeRead})
-	defer session.Close(ctx)
-
 	query := `
 		MATCH (n)
 		WHERE n.project_id IS NOT NULL
@@ -121,15 +117,14 @@ func (s *serviceAdapter) ListProjects(ctx context.Context) ([]core.Project, erro
 		ORDER BY project_id
 	`
 
-	result, err := session.Run(ctx, query, map[string]any{})
+	results, err := s.repository.ExecuteQuery(ctx, query, map[string]any{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list projects: %w", err)
 	}
 
 	var projects []core.Project
-	for result.Next(ctx) {
-		record := result.Record()
-		if projectIDValue, exists := record.Get("project_id"); exists {
+	for _, result := range results {
+		if projectIDValue, exists := result["project_id"]; exists {
 			if projectIDStr, ok := projectIDValue.(string); ok {
 				projects = append(projects, core.Project{
 					ID:   core.ID(projectIDStr),
@@ -139,53 +134,33 @@ func (s *serviceAdapter) ListProjects(ctx context.Context) ([]core.Project, erro
 		}
 	}
 
-	if err := result.Err(); err != nil {
-		return nil, fmt.Errorf("failed to process project list results: %w", err)
-	}
-
 	return projects, nil
 }
 
 // ValidateProject checks if a project exists in the database
 func (s *serviceAdapter) ValidateProject(ctx context.Context, projectID core.ID) (bool, error) {
-	session := s.driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeRead})
-	defer session.Close(ctx)
-
 	query := `
 		MATCH (n {project_id: $project_id})
 		RETURN count(n) > 0 as exists
 		LIMIT 1
 	`
 
-	result, err := session.ExecuteRead(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
-		result, err := tx.Run(ctx, query, map[string]any{
-			"project_id": string(projectID),
-		})
-		if err != nil {
-			return false, err
-		}
-
-		if result.Next(ctx) {
-			record := result.Record()
-			if existsValue, exists := record.Get("exists"); exists {
-				if existsBool, ok := existsValue.(bool); ok {
-					return existsBool, nil
-				}
-			}
-		}
-
-		return false, result.Err()
+	results, err := s.repository.ExecuteQuery(ctx, query, map[string]any{
+		"project_id": string(projectID),
 	})
-
 	if err != nil {
 		return false, fmt.Errorf("failed to validate project: %w", err)
 	}
 
-	if boolResult, ok := result.(bool); ok {
-		return boolResult, nil
+	if len(results) > 0 {
+		if existsValue, exists := results[0]["exists"]; exists {
+			if existsBool, ok := existsValue.(bool); ok {
+				return existsBool, nil
+			}
+		}
 	}
 
-	return false, fmt.Errorf("unexpected result type from validate query")
+	return false, nil
 }
 
 // ClearProject removes all data for a specific project

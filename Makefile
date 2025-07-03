@@ -133,6 +133,7 @@ run-neo4j:
 	@docker run -d \
 		--name gograph-neo4j \
 		-p 7474:7474 -p 7687:7687 \
+		-v gograph-neo4j-data:/data \
 		-e NEO4J_AUTH=neo4j/password \
 		-e NEO4J_PLUGINS='["apoc","graph-data-science"]' \
 		neo4j:5-community

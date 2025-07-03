@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sync"
 	"time"
 
 	"github.com/compozy/gograph/engine/core"
@@ -24,6 +25,9 @@ type Neo4jConfig struct {
 	MaxRetries int    // Maximum retry attempts
 	BatchSize  int    // Batch size for bulk operations
 }
+
+// Global mutex to prevent concurrent index creation across all repository instances
+var indexCreationMutex sync.Mutex
 
 // Neo4jRepository implements the graph.Repository interface
 type Neo4jRepository struct {
@@ -131,7 +135,9 @@ func (r *Neo4jRepository) Close() error {
 
 // CreateNode creates a new node in the graph
 func (r *Neo4jRepository) CreateNode(ctx context.Context, node *core.Node) error {
-	session := r.driver.NewSession(ctx, neo4j.SessionConfig{})
+	session := r.driver.NewSession(ctx, neo4j.SessionConfig{
+		DatabaseName: r.config.Database,
+	})
 	defer session.Close(ctx)
 
 	// Build the query with dynamic properties
@@ -176,7 +182,9 @@ func (r *Neo4jRepository) CreateNodes(ctx context.Context, nodes []core.Node) er
 		return nil
 	}
 
-	session := r.driver.NewSession(ctx, neo4j.SessionConfig{})
+	session := r.driver.NewSession(ctx, neo4j.SessionConfig{
+		DatabaseName: r.config.Database,
+	})
 	defer session.Close(ctx)
 
 	// Determine batch size (default to 1000 if not configured)
@@ -251,7 +259,9 @@ func (r *Neo4jRepository) CreateNodes(ctx context.Context, nodes []core.Node) er
 
 // GetNode retrieves a node by ID
 func (r *Neo4jRepository) GetNode(ctx context.Context, id core.ID) (*core.Node, error) {
-	session := r.driver.NewSession(ctx, neo4j.SessionConfig{})
+	session := r.driver.NewSession(ctx, neo4j.SessionConfig{
+		DatabaseName: r.config.Database,
+	})
 	defer session.Close(ctx)
 
 	query := `
@@ -290,7 +300,9 @@ func (r *Neo4jRepository) GetNode(ctx context.Context, id core.ID) (*core.Node, 
 
 // UpdateNode updates an existing node
 func (r *Neo4jRepository) UpdateNode(ctx context.Context, node *core.Node) error {
-	session := r.driver.NewSession(ctx, neo4j.SessionConfig{})
+	session := r.driver.NewSession(ctx, neo4j.SessionConfig{
+		DatabaseName: r.config.Database,
+	})
 	defer session.Close(ctx)
 
 	query := `
@@ -320,7 +332,9 @@ func (r *Neo4jRepository) UpdateNode(ctx context.Context, node *core.Node) error
 
 // DeleteNode deletes a node by ID
 func (r *Neo4jRepository) DeleteNode(ctx context.Context, id core.ID) error {
-	session := r.driver.NewSession(ctx, neo4j.SessionConfig{})
+	session := r.driver.NewSession(ctx, neo4j.SessionConfig{
+		DatabaseName: r.config.Database,
+	})
 	defer session.Close(ctx)
 
 	query := `
@@ -347,7 +361,9 @@ func (r *Neo4jRepository) DeleteNode(ctx context.Context, id core.ID) error {
 
 // CreateRelationship creates a new relationship
 func (r *Neo4jRepository) CreateRelationship(ctx context.Context, rel *core.Relationship) error {
-	session := r.driver.NewSession(ctx, neo4j.SessionConfig{})
+	session := r.driver.NewSession(ctx, neo4j.SessionConfig{
+		DatabaseName: r.config.Database,
+	})
 	defer session.Close(ctx)
 
 	// Build the relationship properties map (excluding node matching properties)
@@ -395,7 +411,9 @@ func (r *Neo4jRepository) CreateRelationships(ctx context.Context, rels []core.R
 		return nil
 	}
 
-	session := r.driver.NewSession(ctx, neo4j.SessionConfig{})
+	session := r.driver.NewSession(ctx, neo4j.SessionConfig{
+		DatabaseName: r.config.Database,
+	})
 	defer session.Close(ctx)
 
 	// Determine batch size (default to 1000 if not configured)
@@ -476,7 +494,9 @@ func (r *Neo4jRepository) CreateRelationships(ctx context.Context, rels []core.R
 
 // GetRelationship retrieves a relationship by ID
 func (r *Neo4jRepository) GetRelationship(ctx context.Context, id core.ID) (*core.Relationship, error) {
-	session := r.driver.NewSession(ctx, neo4j.SessionConfig{})
+	session := r.driver.NewSession(ctx, neo4j.SessionConfig{
+		DatabaseName: r.config.Database,
+	})
 	defer session.Close(ctx)
 
 	query := `
@@ -515,7 +535,9 @@ func (r *Neo4jRepository) GetRelationship(ctx context.Context, id core.ID) (*cor
 
 // DeleteRelationship deletes a relationship by ID
 func (r *Neo4jRepository) DeleteRelationship(ctx context.Context, id core.ID) error {
-	session := r.driver.NewSession(ctx, neo4j.SessionConfig{})
+	session := r.driver.NewSession(ctx, neo4j.SessionConfig{
+		DatabaseName: r.config.Database,
+	})
 	defer session.Close(ctx)
 
 	query := `
@@ -587,7 +609,9 @@ func (r *Neo4jRepository) ImportAnalysisResult(ctx context.Context, result *core
 	}
 
 	// Use a single session for the entire import to ensure consistency
-	session := r.driver.NewSession(ctx, neo4j.SessionConfig{})
+	session := r.driver.NewSession(ctx, neo4j.SessionConfig{
+		DatabaseName: r.config.Database,
+	})
 	defer session.Close(ctx)
 
 	// Execute the entire import in a single write transaction to ensure consistency
@@ -781,7 +805,13 @@ func (r *Neo4jRepository) createRelationshipsInTransaction(
 
 // ensureIndexes creates indexes for better query performance on large codebases
 func (r *Neo4jRepository) ensureIndexes(ctx context.Context) error {
-	session := r.driver.NewSession(ctx, neo4j.SessionConfig{})
+	// Use global mutex to prevent concurrent index creation across all instances
+	indexCreationMutex.Lock()
+	defer indexCreationMutex.Unlock()
+
+	session := r.driver.NewSession(ctx, neo4j.SessionConfig{
+		DatabaseName: r.config.Database,
+	})
 	defer session.Close(ctx)
 
 	// Create single-property indexes
@@ -946,7 +976,9 @@ func (r *Neo4jRepository) createConstraints(ctx context.Context, session neo4j.S
 
 // createProjectMetadata creates a metadata node for the project
 func (r *Neo4jRepository) createProjectMetadata(ctx context.Context, result *core.AnalysisResult) error {
-	session := r.driver.NewSession(ctx, neo4j.SessionConfig{})
+	session := r.driver.NewSession(ctx, neo4j.SessionConfig{
+		DatabaseName: r.config.Database,
+	})
 	defer session.Close(ctx)
 
 	query := `
@@ -981,7 +1013,9 @@ func (r *Neo4jRepository) createProjectMetadata(ctx context.Context, result *cor
 
 // ClearProject removes all nodes and relationships for a specific project
 func (r *Neo4jRepository) ClearProject(ctx context.Context, projectID core.ID) error {
-	session := r.driver.NewSession(ctx, neo4j.SessionConfig{})
+	session := r.driver.NewSession(ctx, neo4j.SessionConfig{
+		DatabaseName: r.config.Database,
+	})
 	defer session.Close(ctx)
 
 	// Only delete nodes and relationships for the specified project_id
@@ -1014,7 +1048,9 @@ func (r *Neo4jRepository) FindNodesByType(
 	nodeType core.NodeType,
 	projectID core.ID,
 ) ([]core.Node, error) {
-	session := r.driver.NewSession(ctx, neo4j.SessionConfig{})
+	session := r.driver.NewSession(ctx, neo4j.SessionConfig{
+		DatabaseName: r.config.Database,
+	})
 	defer session.Close(ctx)
 
 	query := fmt.Sprintf(`
@@ -1062,7 +1098,9 @@ func (r *Neo4jRepository) FindNodesByName(
 	name string,
 	projectID core.ID,
 ) ([]core.Node, error) {
-	session := r.driver.NewSession(ctx, neo4j.SessionConfig{})
+	session := r.driver.NewSession(ctx, neo4j.SessionConfig{
+		DatabaseName: r.config.Database,
+	})
 	defer session.Close(ctx)
 
 	query := `
@@ -1111,7 +1149,9 @@ func (r *Neo4jRepository) FindRelationshipsByType(
 	relType core.RelationType,
 	projectID core.ID,
 ) ([]core.Relationship, error) {
-	session := r.driver.NewSession(ctx, neo4j.SessionConfig{})
+	session := r.driver.NewSession(ctx, neo4j.SessionConfig{
+		DatabaseName: r.config.Database,
+	})
 	defer session.Close(ctx)
 
 	query := fmt.Sprintf(`
