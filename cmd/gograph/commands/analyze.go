@@ -60,8 +60,8 @@ The resulting graph allows you to:
 
 		// Wrap the entire command execution with panic recovery
 		return errors.WithRecover("analyze_command", func() error {
-			// Load configuration
-			cfg, err := config.Load("")
+			// Load configuration from project path
+			cfg, err := config.LoadProjectConfig(projectPath)
 			if err != nil {
 				return fmt.Errorf("failed to load config: %w", err)
 			}

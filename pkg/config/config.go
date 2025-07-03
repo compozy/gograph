@@ -173,3 +173,60 @@ func (c *Config) Validate() error {
 
 	return nil
 }
+
+// FindConfigFile searches for a gograph configuration file starting from the given path
+// and traversing up the directory tree. It looks for both "gograph.yaml" (new format)
+// and ".gograph.yaml" (legacy format).
+func FindConfigFile(startPath string) (string, error) {
+	// Convert to absolute path
+	absPath, err := filepath.Abs(startPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to get absolute path: %w", err)
+	}
+
+	// Check if startPath is a file or directory
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to stat path: %w", err)
+	}
+
+	// If it's a file, start from its directory
+	if !info.IsDir() {
+		absPath = filepath.Dir(absPath)
+	}
+
+	// Traverse up the directory tree
+	current := absPath
+	for {
+		// Check for config files in current directory
+		possiblePaths := []string{
+			filepath.Join(current, "gograph.yaml"),                              // New format
+			filepath.Join(current, defaultConfigFileName+"."+defaultConfigType), // Legacy format (.gograph.yaml)
+		}
+
+		for _, path := range possiblePaths {
+			if _, err := os.Stat(path); err == nil {
+				return path, nil
+			}
+		}
+
+		// Move to parent directory
+		parent := filepath.Dir(current)
+		if parent == current {
+			// Reached root directory
+			break
+		}
+		current = parent
+	}
+
+	return "", fmt.Errorf("no gograph configuration file found in %s or any parent directory", startPath)
+}
+
+// LoadProjectConfig loads configuration from a project path by searching for config files
+func LoadProjectConfig(projectPath string) (*Config, error) {
+	configPath, err := FindConfigFile(projectPath)
+	if err != nil {
+		return nil, err
+	}
+	return Load(configPath)
+}

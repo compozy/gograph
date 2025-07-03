@@ -104,18 +104,28 @@ func (s *Server) registerTools() {
 // registerAnalysisTools registers code analysis tools
 func (s *Server) registerAnalysisTools() {
 	// analyze_project tool
-	analyzeProjectTool := mcp.NewTool("analyze_project",
+	analyzeProjectTool := mcp.NewTool(
+		"analyze_project",
 		mcp.WithDescription("Analyze a Go project and build its dependency graph"),
 		mcp.WithString("project_path", mcp.Required(), mcp.Description("Path to the Go project to analyze")),
-		mcp.WithString("project_id", mcp.Required(), mcp.Description("Unique identifier for the project")),
+		mcp.WithString(
+			"project_id",
+			mcp.Description(
+				"Unique identifier for the project (optional - will be derived from project_path config if not provided)",
+			),
+		),
 		mcp.WithString("exclude_patterns", mcp.Description("Comma-separated list of path patterns to exclude")),
 	)
 	s.mcpServer.AddTool(analyzeProjectTool, s.handleAnalyzeProject)
 
 	// query_dependencies tool
-	queryDependenciesTool := mcp.NewTool("query_dependencies",
+	queryDependenciesTool := mcp.NewTool(
+		"query_dependencies",
 		mcp.WithDescription("Query dependencies of a package or file"),
-		mcp.WithString("project_id", mcp.Required(), mcp.Description("Project identifier")),
+		mcp.WithString(
+			"project_id",
+			mcp.Description("Project identifier (optional - will be derived from config if not provided)"),
+		),
 		mcp.WithString("path", mcp.Required(), mcp.Description("Package or file path")),
 		mcp.WithString("direction", mcp.Description("'imports' or 'imported_by' (default: imports)")),
 		mcp.WithBoolean("recursive", mcp.Description("Include transitive dependencies")),
@@ -126,18 +136,26 @@ func (s *Server) registerAnalysisTools() {
 // registerNavigationTools registers code navigation tools
 func (s *Server) registerNavigationTools() {
 	// find_implementations tool
-	findImplementationsTool := mcp.NewTool("find_implementations",
+	findImplementationsTool := mcp.NewTool(
+		"find_implementations",
 		mcp.WithDescription("Find all implementations of an interface"),
-		mcp.WithString("project_id", mcp.Required(), mcp.Description("Project identifier")),
+		mcp.WithString(
+			"project_id",
+			mcp.Description("Project identifier (optional - will be derived from config if not provided)"),
+		),
 		mcp.WithString("interface_name", mcp.Required(), mcp.Description("Fully qualified interface name")),
 		mcp.WithString("package", mcp.Description("Package containing the interface")),
 	)
 	s.mcpServer.AddTool(findImplementationsTool, s.handleFindImplementations)
 
 	// trace_call_chain tool
-	traceCallChainTool := mcp.NewTool("trace_call_chain",
+	traceCallChainTool := mcp.NewTool(
+		"trace_call_chain",
 		mcp.WithDescription("Trace call chains between functions"),
-		mcp.WithString("project_id", mcp.Required(), mcp.Description("Project identifier")),
+		mcp.WithString(
+			"project_id",
+			mcp.Description("Project identifier (optional - will be derived from config if not provided)"),
+		),
 		mcp.WithString("from_function", mcp.Required(), mcp.Description("Starting function")),
 		mcp.WithString("to_function", mcp.Description("Target function (optional)")),
 		mcp.WithNumber("max_depth", mcp.Description("Maximum search depth")),
@@ -145,17 +163,25 @@ func (s *Server) registerNavigationTools() {
 	s.mcpServer.AddTool(traceCallChainTool, s.handleTraceCallChain)
 
 	// detect_circular_deps tool
-	detectCircularDepsTool := mcp.NewTool("detect_circular_deps",
+	detectCircularDepsTool := mcp.NewTool(
+		"detect_circular_deps",
 		mcp.WithDescription("Detect circular dependencies in the project"),
-		mcp.WithString("project_id", mcp.Required(), mcp.Description("Project identifier")),
+		mcp.WithString(
+			"project_id",
+			mcp.Description("Project identifier (optional - will be derived from config if not provided)"),
+		),
 		mcp.WithString("scope", mcp.Description("'package' or 'file' level (default: package)")),
 	)
 	s.mcpServer.AddTool(detectCircularDepsTool, s.handleDetectCircularDeps)
 
 	// get_function_info tool
-	getFunctionInfoTool := mcp.NewTool("get_function_info",
+	getFunctionInfoTool := mcp.NewTool(
+		"get_function_info",
 		mcp.WithDescription("Get detailed information about a function"),
-		mcp.WithString("project_id", mcp.Required(), mcp.Description("Project identifier")),
+		mcp.WithString(
+			"project_id",
+			mcp.Description("Project identifier (optional - will be derived from config if not provided)"),
+		),
 		mcp.WithString("function_name", mcp.Required(), mcp.Description("Function name")),
 		mcp.WithString("package", mcp.Description("Package containing the function")),
 		mcp.WithBoolean("include_calls", mcp.Description("Include functions this function calls")),
@@ -164,18 +190,26 @@ func (s *Server) registerNavigationTools() {
 	s.mcpServer.AddTool(getFunctionInfoTool, s.handleGetFunctionInfo)
 
 	// list_packages tool
-	listPackagesTool := mcp.NewTool("list_packages",
+	listPackagesTool := mcp.NewTool(
+		"list_packages",
 		mcp.WithDescription("List all packages in the project"),
-		mcp.WithString("project_id", mcp.Required(), mcp.Description("Project identifier")),
+		mcp.WithString(
+			"project_id",
+			mcp.Description("Project identifier (optional - will be derived from config if not provided)"),
+		),
 		mcp.WithString("pattern", mcp.Description("Filter packages by pattern")),
 		mcp.WithBoolean("include_external", mcp.Description("Include external dependencies")),
 	)
 	s.mcpServer.AddTool(listPackagesTool, s.handleListPackages)
 
 	// get_package_structure tool
-	getPackageStructureTool := mcp.NewTool("get_package_structure",
+	getPackageStructureTool := mcp.NewTool(
+		"get_package_structure",
 		mcp.WithDescription("Get detailed structure of a package"),
-		mcp.WithString("project_id", mcp.Required(), mcp.Description("Project identifier")),
+		mcp.WithString(
+			"project_id",
+			mcp.Description("Project identifier (optional - will be derived from config if not provided)"),
+		),
 		mcp.WithString("package", mcp.Required(), mcp.Description("Package path")),
 		mcp.WithBoolean("include_private", mcp.Description("Include unexported types and functions")),
 	)
@@ -185,18 +219,26 @@ func (s *Server) registerNavigationTools() {
 // registerQueryTools registers query and execution tools
 func (s *Server) registerQueryTools() {
 	// execute_cypher tool
-	executeCypherTool := mcp.NewTool("execute_cypher",
+	executeCypherTool := mcp.NewTool(
+		"execute_cypher",
 		mcp.WithDescription("Execute a Cypher query against the graph database"),
-		mcp.WithString("project_id", mcp.Required(), mcp.Description("Project identifier")),
+		mcp.WithString(
+			"project_id",
+			mcp.Description("Project identifier (optional - will be derived from config if not provided)"),
+		),
 		mcp.WithString("query", mcp.Required(), mcp.Description("Cypher query to execute")),
 		mcp.WithObject("parameters", mcp.Description("Query parameters")),
 	)
 	s.mcpServer.AddTool(executeCypherTool, s.handleExecuteCypher)
 
 	// natural_language_query tool
-	naturalLanguageQueryTool := mcp.NewTool("natural_language_query",
+	naturalLanguageQueryTool := mcp.NewTool(
+		"natural_language_query",
 		mcp.WithDescription("Convert natural language to Cypher and execute"),
-		mcp.WithString("project_id", mcp.Required(), mcp.Description("Project identifier")),
+		mcp.WithString(
+			"project_id",
+			mcp.Description("Project identifier (optional - will be derived from config if not provided)"),
+		),
 		mcp.WithString("query", mcp.Required(), mcp.Description("Natural language query")),
 		mcp.WithString("context", mcp.Description("Additional context for the query")),
 	)
@@ -206,9 +248,13 @@ func (s *Server) registerQueryTools() {
 // registerVerificationTools registers code verification tools
 func (s *Server) registerVerificationTools() {
 	// verify_code_exists tool
-	verifyCodeExistsTool := mcp.NewTool("verify_code_exists",
+	verifyCodeExistsTool := mcp.NewTool(
+		"verify_code_exists",
 		mcp.WithDescription("Verify if a code element exists in the project"),
-		mcp.WithString("project_id", mcp.Required(), mcp.Description("Project identifier")),
+		mcp.WithString(
+			"project_id",
+			mcp.Description("Project identifier (optional - will be derived from config if not provided)"),
+		),
 		mcp.WithString("element_type", mcp.Required(), mcp.Description("'function', 'type', 'interface', 'package'")),
 		mcp.WithString("name", mcp.Required(), mcp.Description("Name of the element")),
 		mcp.WithString("package", mcp.Description("Package containing the element")),
@@ -216,9 +262,13 @@ func (s *Server) registerVerificationTools() {
 	s.mcpServer.AddTool(verifyCodeExistsTool, s.handleVerifyCodeExists)
 
 	// get_code_context tool
-	getCodeContextTool := mcp.NewTool("get_code_context",
+	getCodeContextTool := mcp.NewTool(
+		"get_code_context",
 		mcp.WithDescription("Get context around a code element for LLM understanding"),
-		mcp.WithString("project_id", mcp.Required(), mcp.Description("Project identifier")),
+		mcp.WithString(
+			"project_id",
+			mcp.Description("Project identifier (optional - will be derived from config if not provided)"),
+		),
 		mcp.WithString("element_type", mcp.Required(), mcp.Description("Type of element")),
 		mcp.WithString("name", mcp.Required(), mcp.Description("Element name")),
 		mcp.WithNumber("context_lines", mcp.Description("Number of context lines")),
@@ -226,9 +276,13 @@ func (s *Server) registerVerificationTools() {
 	s.mcpServer.AddTool(getCodeContextTool, s.handleGetCodeContext)
 
 	// validate_import_path tool
-	validateImportPathTool := mcp.NewTool("validate_import_path",
+	validateImportPathTool := mcp.NewTool(
+		"validate_import_path",
 		mcp.WithDescription("Validate and resolve an import path"),
-		mcp.WithString("project_id", mcp.Required(), mcp.Description("Project identifier")),
+		mcp.WithString(
+			"project_id",
+			mcp.Description("Project identifier (optional - will be derived from config if not provided)"),
+		),
 		mcp.WithString("import_path", mcp.Required(), mcp.Description("Import path to validate")),
 		mcp.WithString("from_package", mcp.Description("Package context for relative imports")),
 	)
@@ -238,18 +292,26 @@ func (s *Server) registerVerificationTools() {
 // registerPatternTools registers pattern detection tools
 func (s *Server) registerPatternTools() {
 	// detect_code_patterns tool
-	detectCodePatternsTool := mcp.NewTool("detect_code_patterns",
+	detectCodePatternsTool := mcp.NewTool(
+		"detect_code_patterns",
 		mcp.WithDescription("Detect common code patterns and anti-patterns"),
-		mcp.WithString("project_id", mcp.Required(), mcp.Description("Project identifier")),
+		mcp.WithString(
+			"project_id",
+			mcp.Description("Project identifier (optional - will be derived from config if not provided)"),
+		),
 		mcp.WithArray("patterns", mcp.Description("Specific patterns to look for")),
 		mcp.WithString("scope", mcp.Description("'project', 'package', or specific path")),
 	)
 	s.mcpServer.AddTool(detectCodePatternsTool, s.handleDetectCodePatterns)
 
 	// get_naming_conventions tool
-	getNamingConventionsTool := mcp.NewTool("get_naming_conventions",
+	getNamingConventionsTool := mcp.NewTool(
+		"get_naming_conventions",
 		mcp.WithDescription("Analyze naming conventions used in the project"),
-		mcp.WithString("project_id", mcp.Required(), mcp.Description("Project identifier")),
+		mcp.WithString(
+			"project_id",
+			mcp.Description("Project identifier (optional - will be derived from config if not provided)"),
+		),
 		mcp.WithString("scope", mcp.Description("Scope of analysis")),
 		mcp.WithBoolean("include_suggestions", mcp.Description("Include improvement suggestions")),
 	)
@@ -259,9 +321,13 @@ func (s *Server) registerPatternTools() {
 // registerTestTools registers test integration tools
 func (s *Server) registerTestTools() {
 	// find_tests_for_code tool
-	findTestsForCodeTool := mcp.NewTool("find_tests_for_code",
+	findTestsForCodeTool := mcp.NewTool(
+		"find_tests_for_code",
 		mcp.WithDescription("Find tests for a specific code element"),
-		mcp.WithString("project_id", mcp.Required(), mcp.Description("Project identifier")),
+		mcp.WithString(
+			"project_id",
+			mcp.Description("Project identifier (optional - will be derived from config if not provided)"),
+		),
 		mcp.WithString("element_type", mcp.Required(), mcp.Description("Type of element")),
 		mcp.WithString("name", mcp.Required(), mcp.Description("Element name")),
 		mcp.WithString("package", mcp.Description("Package containing the element")),
@@ -269,9 +335,13 @@ func (s *Server) registerTestTools() {
 	s.mcpServer.AddTool(findTestsForCodeTool, s.handleFindTestsForCode)
 
 	// check_test_coverage tool
-	checkTestCoverageTool := mcp.NewTool("check_test_coverage",
+	checkTestCoverageTool := mcp.NewTool(
+		"check_test_coverage",
 		mcp.WithDescription("Check test coverage for packages or files"),
-		mcp.WithString("project_id", mcp.Required(), mcp.Description("Project identifier")),
+		mcp.WithString(
+			"project_id",
+			mcp.Description("Project identifier (optional - will be derived from config if not provided)"),
+		),
 		mcp.WithString("path", mcp.Description("Package or file path")),
 		mcp.WithBoolean("detailed", mcp.Description("Include detailed coverage info")),
 	)
@@ -336,10 +406,8 @@ func (s *Server) handleAnalyzeProject(ctx context.Context, req mcp.CallToolReque
 	if err != nil {
 		return nil, fmt.Errorf("project_path is required: %w", err)
 	}
-	projectID, err := req.RequireString("project_id")
-	if err != nil {
-		return nil, fmt.Errorf("project_id is required: %w", err)
-	}
+	// project_id is now optional - will be derived from config if not provided
+	projectID := getString(req, "project_id")
 
 	excludePatterns := getString(req, "exclude_patterns")
 
@@ -357,10 +425,8 @@ func (s *Server) handleAnalyzeProject(ctx context.Context, req mcp.CallToolReque
 }
 
 func (s *Server) handleQueryDependencies(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	projectID, err := req.RequireString("project_id")
-	if err != nil {
-		return nil, err
-	}
+	// project_id is now optional - will be derived from config if not provided
+	projectID := getString(req, "project_id")
 	path, err := req.RequireString("path")
 	if err != nil {
 		return nil, err
@@ -385,10 +451,8 @@ func (s *Server) handleQueryDependencies(ctx context.Context, req mcp.CallToolRe
 }
 
 func (s *Server) handleFindImplementations(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	projectID, err := req.RequireString("project_id")
-	if err != nil {
-		return nil, err
-	}
+	// project_id is now optional - will be derived from config if not provided
+	projectID := getString(req, "project_id")
 	interfaceName, err := req.RequireString("interface_name")
 	if err != nil {
 		return nil, err
@@ -408,10 +472,8 @@ func (s *Server) handleFindImplementations(ctx context.Context, req mcp.CallTool
 }
 
 func (s *Server) handleTraceCallChain(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	projectID, err := req.RequireString("project_id")
-	if err != nil {
-		return nil, err
-	}
+	// project_id is now optional - will be derived from config if not provided
+	projectID := getString(req, "project_id")
 	fromFunction, err := req.RequireString("from_function")
 	if err != nil {
 		return nil, err
@@ -433,10 +495,8 @@ func (s *Server) handleTraceCallChain(ctx context.Context, req mcp.CallToolReque
 }
 
 func (s *Server) handleDetectCircularDeps(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	projectID, err := req.RequireString("project_id")
-	if err != nil {
-		return nil, err
-	}
+	// project_id is now optional - will be derived from config if not provided
+	projectID := getString(req, "project_id")
 	scope := getString(req, "scope")
 	if scope == "" {
 		scope = "package"
@@ -454,10 +514,8 @@ func (s *Server) handleDetectCircularDeps(ctx context.Context, req mcp.CallToolR
 }
 
 func (s *Server) handleGetFunctionInfo(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	projectID, err := req.RequireString("project_id")
-	if err != nil {
-		return nil, err
-	}
+	// project_id is now optional - will be derived from config if not provided
+	projectID := getString(req, "project_id")
 	functionName, err := req.RequireString("function_name")
 	if err != nil {
 		return nil, err
@@ -481,10 +539,8 @@ func (s *Server) handleGetFunctionInfo(ctx context.Context, req mcp.CallToolRequ
 }
 
 func (s *Server) handleListPackages(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	projectID, err := req.RequireString("project_id")
-	if err != nil {
-		return nil, err
-	}
+	// project_id is now optional - will be derived from config if not provided
+	projectID := getString(req, "project_id")
 	pattern := getString(req, "pattern")
 	includeExternal := getBool(req, "include_external")
 
@@ -501,10 +557,8 @@ func (s *Server) handleListPackages(ctx context.Context, req mcp.CallToolRequest
 }
 
 func (s *Server) handleGetPackageStructure(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	projectID, err := req.RequireString("project_id")
-	if err != nil {
-		return nil, err
-	}
+	// project_id is now optional - will be derived from config if not provided
+	projectID := getString(req, "project_id")
 	packageName, err := req.RequireString("package")
 	if err != nil {
 		return nil, err
@@ -524,10 +578,8 @@ func (s *Server) handleGetPackageStructure(ctx context.Context, req mcp.CallTool
 }
 
 func (s *Server) handleExecuteCypher(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	projectID, err := req.RequireString("project_id")
-	if err != nil {
-		return nil, err
-	}
+	// project_id is now optional - will be derived from config if not provided
+	projectID := getString(req, "project_id")
 	query, err := req.RequireString("query")
 	if err != nil {
 		return nil, err
@@ -547,10 +599,8 @@ func (s *Server) handleExecuteCypher(ctx context.Context, req mcp.CallToolReques
 }
 
 func (s *Server) handleNaturalLanguageQuery(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	projectID, err := req.RequireString("project_id")
-	if err != nil {
-		return nil, err
-	}
+	// project_id is now optional - will be derived from config if not provided
+	projectID := getString(req, "project_id")
 	query, err := req.RequireString("query")
 	if err != nil {
 		return nil, err
@@ -570,10 +620,8 @@ func (s *Server) handleNaturalLanguageQuery(ctx context.Context, req mcp.CallToo
 }
 
 func (s *Server) handleVerifyCodeExists(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	projectID, err := req.RequireString("project_id")
-	if err != nil {
-		return nil, err
-	}
+	// project_id is now optional - will be derived from config if not provided
+	projectID := getString(req, "project_id")
 	elementType, err := req.RequireString("element_type")
 	if err != nil {
 		return nil, err
@@ -598,10 +646,8 @@ func (s *Server) handleVerifyCodeExists(ctx context.Context, req mcp.CallToolReq
 }
 
 func (s *Server) handleGetCodeContext(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	projectID, err := req.RequireString("project_id")
-	if err != nil {
-		return nil, err
-	}
+	// project_id is now optional - will be derived from config if not provided
+	projectID := getString(req, "project_id")
 	elementType, err := req.RequireString("element_type")
 	if err != nil {
 		return nil, err
@@ -626,10 +672,8 @@ func (s *Server) handleGetCodeContext(ctx context.Context, req mcp.CallToolReque
 }
 
 func (s *Server) handleValidateImportPath(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	projectID, err := req.RequireString("project_id")
-	if err != nil {
-		return nil, err
-	}
+	// project_id is now optional - will be derived from config if not provided
+	projectID := getString(req, "project_id")
 	importPath, err := req.RequireString("import_path")
 	if err != nil {
 		return nil, err
@@ -649,10 +693,8 @@ func (s *Server) handleValidateImportPath(ctx context.Context, req mcp.CallToolR
 }
 
 func (s *Server) handleDetectCodePatterns(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	projectID, err := req.RequireString("project_id")
-	if err != nil {
-		return nil, err
-	}
+	// project_id is now optional - will be derived from config if not provided
+	projectID := getString(req, "project_id")
 	patterns := req.GetArguments()["patterns"]
 	scope := getString(req, "scope")
 	if scope == "" {
@@ -672,10 +714,8 @@ func (s *Server) handleDetectCodePatterns(ctx context.Context, req mcp.CallToolR
 }
 
 func (s *Server) handleGetNamingConventions(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	projectID, err := req.RequireString("project_id")
-	if err != nil {
-		return nil, err
-	}
+	// project_id is now optional - will be derived from config if not provided
+	projectID := getString(req, "project_id")
 	scope := getString(req, "scope")
 	includeSuggestions := getBool(req, "include_suggestions")
 
@@ -692,10 +732,8 @@ func (s *Server) handleGetNamingConventions(ctx context.Context, req mcp.CallToo
 }
 
 func (s *Server) handleFindTestsForCode(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	projectID, err := req.RequireString("project_id")
-	if err != nil {
-		return nil, err
-	}
+	// project_id is now optional - will be derived from config if not provided
+	projectID := getString(req, "project_id")
 	elementType, err := req.RequireString("element_type")
 	if err != nil {
 		return nil, err
@@ -720,10 +758,8 @@ func (s *Server) handleFindTestsForCode(ctx context.Context, req mcp.CallToolReq
 }
 
 func (s *Server) handleCheckTestCoverage(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	projectID, err := req.RequireString("project_id")
-	if err != nil {
-		return nil, err
-	}
+	// project_id is now optional - will be derived from config if not provided
+	projectID := getString(req, "project_id")
 	path := getString(req, "path")
 	detailed := getBool(req, "detailed")
 
@@ -749,10 +785,8 @@ func (s *Server) handleListProjects(ctx context.Context, _ mcp.CallToolRequest) 
 }
 
 func (s *Server) handleValidateProject(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	projectID, err := req.RequireString("project_id")
-	if err != nil {
-		return nil, err
-	}
+	// project_id is now optional - will be derived from config if not provided
+	projectID := getString(req, "project_id")
 
 	response, err := s.HandleValidateProjectInternal(ctx, map[string]any{
 		"project_id": projectID,

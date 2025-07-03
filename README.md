@@ -166,7 +166,9 @@ cd /path/to/your/go/project
 # Initialize gograph configuration with required project ID
 gograph init --project-id my-awesome-project --project-name "My Awesome Project"
 
-# Analyze the entire codebase (project ID is read from config)
+# Analyze the entire codebase
+# Note: gograph automatically finds and uses the project ID from gograph.yaml
+# in the project directory or any parent directory
 gograph analyze . \
   --include-tests \
   --include-vendor \
@@ -619,6 +621,8 @@ Add to your Claude Desktop configuration (`~/Library/Application Support/Claude/
 ```
 
 ### Available MCP Tools
+
+**Note:** All MCP tools now support automatic project ID discovery from your `gograph.yaml` configuration file. When using MCP tools, you no longer need to provide the `project_id` parameter - it will be automatically derived from the project's configuration file.
 
 **Project Management:**
 - `list_projects`: List all projects in the database

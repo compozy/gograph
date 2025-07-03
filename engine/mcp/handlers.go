@@ -13,11 +13,43 @@ import (
 	"github.com/compozy/gograph/engine/core"
 	"github.com/compozy/gograph/engine/graph"
 	"github.com/compozy/gograph/engine/query"
+	"github.com/compozy/gograph/pkg/config"
 	"github.com/compozy/gograph/pkg/logger"
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
 )
 
 // Tool handler implementations - These replace the stub implementations
+
+// getProjectID extracts project ID from input, with fallback to loading from config
+func (s *Server) getProjectID(input map[string]any) (string, error) {
+	// First, try to get explicit project_id
+	if projectID, ok := input["project_id"].(string); ok && projectID != "" {
+		return projectID, nil
+	}
+
+	// If not provided, try to load from project_path config
+	projectPath, ok := input["project_path"].(string)
+	if !ok || projectPath == "" {
+		// For tools that don't have project_path, try current directory
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("project_id not provided and cannot determine current directory: %w", err)
+		}
+		projectPath = cwd
+	}
+
+	// Try to load from config
+	cfg, err := config.LoadProjectConfig(projectPath)
+	if err != nil {
+		return "", fmt.Errorf("project_id not provided and failed to load config from %s: %w", projectPath, err)
+	}
+
+	if cfg.Project.ID == "" {
+		return "", fmt.Errorf("project_id not provided and not found in config at %s", projectPath)
+	}
+
+	return cfg.Project.ID, nil
+}
 
 // HandleAnalyzeProjectInternal analyzes a Go project and stores results in Neo4j
 func (s *Server) HandleAnalyzeProjectInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
@@ -25,9 +57,11 @@ func (s *Server) HandleAnalyzeProjectInternal(ctx context.Context, input map[str
 	if !ok {
 		return nil, fmt.Errorf("project_path is required")
 	}
-	projectID, ok := input["project_id"].(string)
-	if !ok {
-		return nil, fmt.Errorf("project_id is required")
+
+	// Get project ID using helper
+	projectID, err := s.getProjectID(input)
+	if err != nil {
+		return nil, err
 	}
 
 	// Validate path is allowed
@@ -108,10 +142,12 @@ func (s *Server) HandleAnalyzeProjectInternal(ctx context.Context, input map[str
 
 // HandleExecuteCypherInternal executes a custom Cypher query
 func (s *Server) HandleExecuteCypherInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
-	projectID, ok := input["project_id"].(string)
-	if !ok {
-		return nil, fmt.Errorf("project_id is required")
+	// Get project ID using helper
+	projectID, err := s.getProjectID(input)
+	if err != nil {
+		return nil, err
 	}
+
 	query, ok := input["query"].(string)
 	if !ok {
 		return nil, fmt.Errorf("query is required")
@@ -161,9 +197,10 @@ func (s *Server) HandleExecuteCypherInternal(ctx context.Context, input map[stri
 //
 //nolint:funlen,gocyclo // MCP tool handlers can be longer and have complex logic
 func (s *Server) HandleGetFunctionInfoInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
-	projectID, ok := input["project_id"].(string)
-	if !ok {
-		return nil, fmt.Errorf("project_id is required")
+	// Get project ID using helper
+	projectID, err := s.getProjectID(input)
+	if err != nil {
+		return nil, err
 	}
 	functionName, ok := input["function_name"].(string)
 	if !ok {
@@ -343,9 +380,10 @@ func (s *Server) AddFunctionRelationships(
 //
 //nolint:funlen // MCP tool handlers can be longer for comprehensive functionality
 func (s *Server) HandleQueryDependenciesInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
-	projectID, ok := input["project_id"].(string)
-	if !ok {
-		return nil, fmt.Errorf("project_id is required")
+	// Get project ID using helper
+	projectID, err := s.getProjectID(input)
+	if err != nil {
+		return nil, err
 	}
 	path, ok := input["path"].(string)
 	if !ok {
@@ -489,9 +527,10 @@ func (s *Server) IsPathAllowed(path string) bool {
 //
 //nolint:funlen // MCP tool handlers can be longer for comprehensive functionality
 func (s *Server) HandleFindImplementationsInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
-	projectID, ok := input["project_id"].(string)
-	if !ok {
-		return nil, fmt.Errorf("project_id is required")
+	// Get project ID using helper
+	projectID, err := s.getProjectID(input)
+	if err != nil {
+		return nil, err
 	}
 	interfaceName, ok := input["interface_name"].(string)
 	if !ok {
@@ -578,9 +617,10 @@ func (s *Server) HandleFindImplementationsInternal(ctx context.Context, input ma
 //
 //nolint:funlen // MCP tool handlers can be longer for comprehensive functionality
 func (s *Server) HandleTraceCallChainInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
-	projectID, ok := input["project_id"].(string)
-	if !ok {
-		return nil, fmt.Errorf("project_id is required")
+	// Get project ID using helper
+	projectID, err := s.getProjectID(input)
+	if err != nil {
+		return nil, err
 	}
 	fromFunction, ok := input["from_function"].(string)
 	if !ok {
@@ -682,9 +722,10 @@ func (s *Server) HandleTraceCallChainInternal(ctx context.Context, input map[str
 
 // handleDetectCircularDeps detects circular dependencies
 func (s *Server) HandleDetectCircularDepsInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
-	projectID, ok := input["project_id"].(string)
-	if !ok {
-		return nil, fmt.Errorf("project_id is required")
+	// Get project ID using helper
+	projectID, err := s.getProjectID(input)
+	if err != nil {
+		return nil, err
 	}
 	scope := "packages"
 	if s, ok := input["scope"].(string); ok {
@@ -745,9 +786,10 @@ func (s *Server) HandleDetectCircularDepsInternal(ctx context.Context, input map
 
 // handleListPackages lists all packages in the project
 func (s *Server) HandleListPackagesInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
-	projectID, ok := input["project_id"].(string)
-	if !ok {
-		return nil, fmt.Errorf("project_id is required")
+	// Get project ID using helper
+	projectID, err := s.getProjectID(input)
+	if err != nil {
+		return nil, err
 	}
 	pattern := ""
 	if p, ok := input["pattern"].(string); ok {
@@ -810,9 +852,10 @@ func (s *Server) HandleListPackagesInternal(ctx context.Context, input map[strin
 //
 //nolint:funlen // MCP tool handlers can be longer for comprehensive functionality
 func (s *Server) HandleGetPackageStructureInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
-	projectID, ok := input["project_id"].(string)
-	if !ok {
-		return nil, fmt.Errorf("project_id is required")
+	// Get project ID using helper
+	projectID, err := s.getProjectID(input)
+	if err != nil {
+		return nil, err
 	}
 	packageName, ok := input["package"].(string)
 	if !ok {
@@ -915,9 +958,10 @@ func (s *Server) HandleGetPackageStructureInternal(ctx context.Context, input ma
 
 // handleNaturalLanguageQuery converts natural language to Cypher and executes
 func (s *Server) HandleNaturalLanguageQueryInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
-	projectID, ok := input["project_id"].(string)
-	if !ok {
-		return nil, fmt.Errorf("project_id is required")
+	// Get project ID using helper
+	projectID, err := s.getProjectID(input)
+	if err != nil {
+		return nil, err
 	}
 	query, ok := input["query"].(string)
 	if !ok {
@@ -936,7 +980,6 @@ func (s *Server) HandleNaturalLanguageQueryInternal(ctx context.Context, input m
 	// Use LLM service to translate natural language to Cypher
 	var cypherQuery string
 	var params map[string]any
-	var err error
 
 	if s.llmService != nil {
 		// Get schema for the project
@@ -994,9 +1037,10 @@ func (s *Server) HandleNaturalLanguageQueryInternal(ctx context.Context, input m
 //
 //nolint:gocyclo,funlen // MCP tool handlers need multiple branches for different element types
 func (s *Server) HandleVerifyCodeExistsInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
-	projectID, ok := input["project_id"].(string)
-	if !ok {
-		return nil, fmt.Errorf("project_id is required")
+	// Get project ID using helper
+	projectID, err := s.getProjectID(input)
+	if err != nil {
+		return nil, err
 	}
 	elementType, ok := input["element_type"].(string)
 	if !ok {
@@ -1374,11 +1418,12 @@ func (s *Server) BuildElementLocationQuery(elementType string) (string, error) {
 func (s *Server) ParseCodeContextInput(
 	input map[string]any,
 ) (projectID, elementType, name string, contextLines int, err error) {
-	projectID, ok := input["project_id"].(string)
-	if !ok {
-		return "", "", "", 0, fmt.Errorf("project_id is required")
+	// Get project ID using helper
+	projectID, err = s.getProjectID(input)
+	if err != nil {
+		return "", "", "", 0, err
 	}
-	elementType, ok = input["element_type"].(string)
+	elementType, ok := input["element_type"].(string)
 	if !ok {
 		return "", "", "", 0, fmt.Errorf("element_type is required")
 	}
@@ -1507,9 +1552,10 @@ func (s *Server) ExtractCodeContextFromResults(
 
 // handleValidateImportPath validates an import path
 func (s *Server) HandleValidateImportPathInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
-	projectID, ok := input["project_id"].(string)
-	if !ok {
-		return nil, fmt.Errorf("project_id is required")
+	// Get project ID using helper
+	projectID, err := s.getProjectID(input)
+	if err != nil {
+		return nil, err
 	}
 	importPath, ok := input["import_path"].(string)
 	if !ok {
@@ -1594,9 +1640,10 @@ func (s *Server) HandleValidateImportPathInternal(ctx context.Context, input map
 
 // handleDetectCodePatterns detects code patterns
 func (s *Server) HandleDetectCodePatternsInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
-	projectID, ok := input["project_id"].(string)
-	if !ok {
-		return nil, fmt.Errorf("project_id is required")
+	// Get project ID using helper
+	projectID, err := s.getProjectID(input)
+	if err != nil {
+		return nil, err
 	}
 	// Extract patterns filter (optional)
 	_ = input["patterns"] // TODO: Use specific patterns filter in future
@@ -1635,9 +1682,10 @@ func (s *Server) HandleDetectCodePatternsInternal(ctx context.Context, input map
 
 // handleGetNamingConventions analyzes naming conventions
 func (s *Server) HandleGetNamingConventionsInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
-	projectID, ok := input["project_id"].(string)
-	if !ok {
-		return nil, fmt.Errorf("project_id is required")
+	// Get project ID using helper
+	projectID, err := s.getProjectID(input)
+	if err != nil {
+		return nil, err
 	}
 	scope := ""
 	if s, ok := input["scope"].(string); ok {
@@ -1685,9 +1733,10 @@ func (s *Server) HandleGetNamingConventionsInternal(ctx context.Context, input m
 
 // handleFindTestsForCode finds tests for code elements
 func (s *Server) HandleFindTestsForCodeInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
-	projectID, ok := input["project_id"].(string)
-	if !ok {
-		return nil, fmt.Errorf("project_id is required")
+	// Get project ID using helper
+	projectID, err := s.getProjectID(input)
+	if err != nil {
+		return nil, err
 	}
 	elementType, ok := input["element_type"].(string)
 	if !ok {
@@ -1738,9 +1787,10 @@ func (s *Server) HandleFindTestsForCodeInternal(ctx context.Context, input map[s
 
 // handleCheckTestCoverage checks test coverage
 func (s *Server) HandleCheckTestCoverageInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
-	projectID, ok := input["project_id"].(string)
-	if !ok {
-		return nil, fmt.Errorf("project_id is required")
+	// Get project ID using helper
+	projectID, err := s.getProjectID(input)
+	if err != nil {
+		return nil, err
 	}
 	path := ""
 	if p, ok := input["path"].(string); ok {
@@ -2523,9 +2573,10 @@ func (s *Server) HandleListProjectsInternal(ctx context.Context, _ map[string]an
 
 // HandleValidateProjectInternal validates if a project exists in the database
 func (s *Server) HandleValidateProjectInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
-	projectID, ok := input["project_id"].(string)
-	if !ok {
-		return nil, fmt.Errorf("project_id is required")
+	// Get project ID using helper
+	projectID, err := s.getProjectID(input)
+	if err != nil {
+		return nil, err
 	}
 
 	logger.Info("validating project existence", "project_id", projectID)
