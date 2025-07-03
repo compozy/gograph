@@ -18,14 +18,53 @@ A powerful CLI tool that analyzes Go codebases and generates graph visualization
 - **📝 Configurable**: YAML-based configuration for project-specific settings
 - **🏛️ Clean Architecture**: Extensible design following Domain-Driven Design principles
 
+## 🛡️ Project Isolation
+
+gograph provides **complete project isolation** to enable multiple Go projects to coexist safely in the same Neo4j database:
+
+### Key Benefits
+
+- **🏗️ Multi-Project Support**: Analyze multiple projects without data conflicts
+- **🔒 Data Isolation**: Each project's data is completely isolated from others
+- **🏷️ Unique Identifiers**: User-defined project IDs ensure clear project boundaries
+- **🚀 Performance Optimized**: Database indexes on project_id for fast queries
+- **🧹 Safe Cleanup**: Clear project data without affecting other projects
+
+### How It Works
+
+1. **Project Initialization**: Each project requires a unique `project_id` during setup
+2. **Data Tagging**: All nodes and relationships are tagged with the project_id
+3. **Query Filtering**: All operations automatically filter by project_id
+4. **Index Optimization**: Database indexes ensure fast project-scoped queries
+
+### Usage Example
+
+```bash
+# Project A
+cd /path/to/project-a
+gograph init --project-id backend-api --project-name "Backend API"
+gograph analyze
+
+# Project B  
+cd /path/to/project-b
+gograph init --project-id frontend-app --project-name "Frontend App"
+gograph analyze
+
+# Both projects coexist safely in the same database
+# Queries automatically filter by project_id
+```
+
 ## 📋 Table of Contents
 
-- [Installation](#installation)
+- [Project Isolation](#️-project-isolation)
+- [Installation](#installation)  
 - [Quick Start](#quick-start)
+- [Complete Workflow](#-complete-codebase-analysis-workflow)
 - [Usage](#usage)
 - [Configuration](#configuration)
 - [Graph Schema](#graph-schema)
 - [MCP Integration](#mcp-integration)
+- [Architecture](#️-architecture)
 - [Development](#development)
 - [Contributing](#contributing)
 - [License](#license)
@@ -88,7 +127,7 @@ docker run -v $(pwd):/workspace compozy/gograph:latest analyze /workspace
 2. **Initialize project configuration**:
 
    ```bash
-   gograph init
+   gograph init --project-id my-awesome-project
    ```
 
 3. **Analyze your Go project**:
@@ -124,15 +163,14 @@ make run-neo4j
 # Navigate to your Go project directory
 cd /path/to/your/go/project
 
-# Initialize gograph configuration
-gograph init --project-name my-awesome-project
+# Initialize gograph configuration with required project ID
+gograph init --project-id my-awesome-project --project-name "My Awesome Project"
 
-# Analyze the entire codebase (including tests and dependencies)
+# Analyze the entire codebase (project ID is read from config)
 gograph analyze . \
   --include-tests \
   --include-vendor \
-  --concurrency 8 \
-  --project-id my-awesome-project
+  --concurrency 8
 ```
 
 ### 2. Access Neo4j Browser
@@ -299,26 +337,55 @@ Initialize a new project configuration in the current directory.
 gograph init [flags]
 
 Flags:
-  --force          Overwrite existing configuration
-  --project-name   Set project name (default: directory name)
+  --project-id string      Unique project identifier (required)
+  --project-name string    Human-readable project name (defaults to project-id)
+  --project-path string    Project root path (defaults to current directory)
+  --force                  Overwrite existing configuration
+```
+
+**Examples:**
+```bash
+# Basic initialization with required project ID
+gograph init --project-id my-backend-api
+
+# Full initialization with custom settings
+gograph init \
+  --project-id my-backend-api \
+  --project-name "My Backend API" \
+  --project-path ./src
+
+# Force overwrite existing configuration
+gograph init --project-id my-api --force
 ```
 
 #### `gograph analyze`
 
-Analyze a Go project and store the results in Neo4j.
+Analyze a Go project and store the results in Neo4j. The project ID is automatically loaded from the `gograph.yaml` configuration file.
 
 ```bash
 gograph analyze [path] [flags]
 
 Flags:
   --path string              Path to analyze (default: current directory)
-  --neo4j-uri string         Neo4j connection URI
-  --neo4j-user string        Neo4j username
-  --neo4j-password string    Neo4j password
-  --project-id string        Project identifier
+  --neo4j-uri string         Neo4j connection URI (overrides config)
+  --neo4j-user string        Neo4j username (overrides config)
+  --neo4j-password string    Neo4j password (overrides config)
+  --project-id string        Project identifier (overrides config)
   --concurrency int          Number of concurrent workers (default: 4)
   --include-tests           Include test files in analysis
   --include-vendor          Include vendor directory
+```
+
+**Examples:**
+```bash
+# Analyze current directory (uses config from gograph.yaml)
+gograph analyze
+
+# Analyze specific directory with all options
+gograph analyze /path/to/project --include-tests --include-vendor --concurrency 8
+
+# Override project ID for one-time analysis
+gograph analyze --project-id temporary-analysis
 ```
 
 #### `gograph query`
@@ -349,25 +416,44 @@ Flags:
 
 #### `gograph clear`
 
-Clear project data from the database.
+Clear project data from the database. Uses project isolation to safely remove only the specified project's data.
 
 ```bash
 gograph clear [project-id] [flags]
 
 Flags:
-  --all    Clear all projects
+  --all    Clear all projects (dangerous - use with caution)
   --force  Skip confirmation prompt
 ```
+
+**Examples:**
+```bash
+# Clear current project (reads project ID from gograph.yaml)
+gograph clear
+
+# Clear specific project by ID
+gograph clear my-backend-api
+
+# Clear with confirmation skip
+gograph clear my-backend-api --force
+
+# Clear all projects (dangerous - removes all data)
+gograph clear --all --force
+```
+
+**Safety**: The clear command only removes data tagged with the specified project_id, ensuring other projects remain untouched.
 
 ### Examples
 
 ```bash
-# Analyze current directory
+# Initialize a new project
+gograph init --project-id myproject --project-name "My Go Project"
+
+# Analyze current directory (uses project ID from gograph.yaml)
 gograph analyze
 
 # Analyze specific project with custom settings
 gograph analyze /path/to/project \
-  --project-id myproject \
   --concurrency 8 \
   --include-tests
 
@@ -395,15 +481,15 @@ Create a `gograph.yaml` file in your project root:
 
 ```yaml
 project:
-  name: my-project
-  root_path: .
-  id: my-project-id
+  id: my-project-id              # Required: Unique project identifier
+  name: my-project               # Optional: Human-readable name (defaults to id)
+  root_path: .                   # Optional: Project root path (defaults to ".")
 
 neo4j:
-  uri: bolt://localhost:7687
-  username: neo4j
-  password: password
-  database: gograph_my_project
+  uri: bolt://localhost:7687     # Neo4j connection URI
+  username: neo4j                # Neo4j username
+  password: password             # Neo4j password
+  database: ""                   # Optional: Database name (uses default if empty)
 
 analysis:
   ignore_dirs:
@@ -449,9 +535,11 @@ You can override configuration using environment variables:
 export GOGRAPH_NEO4J_URI=bolt://localhost:7687
 export GOGRAPH_NEO4J_USERNAME=neo4j
 export GOGRAPH_NEO4J_PASSWORD=password
-export GOGRAPH_PROJECT_ID=my-project
+export GOGRAPH_PROJECT_ID=my-project         # Overrides config project ID
 export GOGRAPH_MCP_PORT=8080
 ```
+
+**Important**: The `GOGRAPH_PROJECT_ID` environment variable will override the project ID from your `gograph.yaml` file. This is useful for CI/CD environments or temporary analysis.
 
 ## 📊 Graph Schema
 
@@ -532,15 +620,32 @@ Add to your Claude Desktop configuration (`~/Library/Application Support/Claude/
 
 ### Available MCP Tools
 
-- `analyze_project`: Analyze a Go project
-- `query_dependencies`: Query project dependencies
+**Project Management:**
+- `list_projects`: List all projects in the database
+- `validate_project`: Validate project existence and configuration
+- `analyze_project`: Analyze a Go project with full isolation
+
+**Code Analysis:**
+- `query_dependencies`: Query project dependencies with filtering
 - `get_function_info`: Get detailed function information
-- `list_packages`: List all packages in a project
-- `execute_cypher`: Execute custom Cypher queries
+- `list_packages`: List all packages in a specific project
+- `get_package_structure`: Get detailed package structure
+- `find_implementations`: Find interface implementations
+- `trace_call_chain`: Trace function call chains
+
+**Querying & Search:**
+- `execute_cypher`: Execute custom Cypher queries with project filtering
 - `natural_language_query`: Translate natural language to Cypher
-- `detect_code_patterns`: Detect common design patterns
-- `verify_function_exists`: Verify function existence (prevent hallucinations)
-- `verify_import_relationship`: Verify import relationships
+- `get_code_context`: Get code context for LLM understanding
+
+**Code Quality:**
+- `detect_code_patterns`: Detect common design patterns and anti-patterns
+- `check_test_coverage`: Analyze test coverage by package
+- `detect_circular_deps`: Find circular dependencies
+
+**Verification (Anti-Hallucination):**
+- `verify_code_exists`: Verify function/type existence
+- `validate_import_path`: Verify import relationships
 
 For detailed MCP integration guide, see [docs/MCP_INTEGRATION.md](docs/MCP_INTEGRATION.md).
 
