@@ -184,9 +184,11 @@ gograph analyze . \
 
 ### 3. Essential Graph Visualization Queries
 
-Once connected, try these queries to explore your codebase:
+Once connected to Neo4j Browser, you can explore your codebase using Cypher queries.
 
-#### **Complete Project Overview**
+**📚 For a comprehensive collection of queries, see [docs/QUERIES.md](docs/QUERIES.md)**
+
+Here are a few essential queries to get you started:
 
 ```cypher
 // View the entire project structure
@@ -194,49 +196,15 @@ MATCH (n)
 WHERE n.project_id = 'my-awesome-project'
 RETURN n
 LIMIT 500
-```
 
-#### **Package Dependencies**
-
-```cypher
-// Visualize package import relationships
-MATCH (p1:Package)-[:IMPORTS]->(p2:Package)
-WHERE p1.project_id = 'my-awesome-project'
-RETURN p1, p2
-```
-
-#### **Function Call Graph**
-
-```cypher
-// See function call relationships
-MATCH (f1:Function)-[:CALLS]->(f2:Function)
-WHERE f1.project_id = 'my-awesome-project'
-RETURN f1, f2
-LIMIT 100
-```
-
-#### **Architecture Overview**
-
-```cypher
-// High-level architecture view (packages and their relationships)
-MATCH path = (p1:Package)-[:IMPORTS*1..2]->(p2:Package)
-WHERE p1.project_id = 'my-awesome-project'
-  AND p2.project_id = 'my-awesome-project'
-RETURN path
-LIMIT 50
-```
-
-#### **Code Complexity Hotspots**
-
-```cypher
-// Find the most connected functions (potential complexity hotspots)
+// Find the most connected functions
 MATCH (f:Function)
 WHERE f.project_id = 'my-awesome-project'
-WITH f,
-     size((f)-[:CALLS]->()) as outgoing_calls,
-     size((f)<-[:CALLS]-()) as incoming_calls
-RETURN f.name, f.package, outgoing_calls, incoming_calls,
-       (outgoing_calls + incoming_calls) as total_connections
+OPTIONAL MATCH (f)-[:CALLS]->(called)
+WITH f, count(called) as outgoing_calls
+OPTIONAL MATCH (f)<-[:CALLS]-(caller)
+RETURN f.name, f.package, outgoing_calls, count(caller) as incoming_calls,
+       (outgoing_calls + count(caller)) as total_connections
 ORDER BY total_connections DESC
 LIMIT 20
 ```
@@ -253,63 +221,22 @@ LIMIT 20
 
 **Useful Browser Commands:**
 
-```cypher
-// Show node labels and relationship types
-CALL db.labels()
-CALL db.relationshipTypes()
-
-// Count nodes by type
-MATCH (n)
-WHERE n.project_id = 'my-awesome-project'
-RETURN labels(n)[0] as NodeType, count(n) as Count
-ORDER BY Count DESC
-
-// Find circular dependencies
-MATCH path = (p:Package)-[:IMPORTS*2..]->(p)
-WHERE p.project_id = 'my-awesome-project'
-RETURN path
-LIMIT 10
-```
+See [docs/QUERIES.md](docs/QUERIES.md) for more queries including:
+- Node and relationship type discovery
+- Circular dependency detection
+- Package dependency analysis
+- Test coverage analysis
+- And many more!
 
 ### 5. Advanced Analysis Examples
 
-```bash
-# Find unused functions
-gograph query "
-  MATCH (f:Function)
-  WHERE f.project_id = 'my-awesome-project'
-    AND NOT (f)<-[:CALLS]-()
-    AND NOT f.name = 'main'
-  RETURN f.name, f.package, f.file
-  ORDER BY f.package, f.name
-"
-
-# Analyze test coverage by package
-gograph query "
-  MATCH (p:Package)
-  WHERE p.project_id = 'my-awesome-project'
-  OPTIONAL MATCH (p)-[:CONTAINS]->(f:File)
-  WHERE f.name ENDS WITH '_test.go'
-  WITH p, count(f) as test_files
-  OPTIONAL MATCH (p)-[:CONTAINS]->(f2:File)
-  WHERE NOT f2.name ENDS WITH '_test.go'
-  RETURN p.name, count(f2) as source_files, test_files,
-         CASE WHEN count(f2) > 0
-              THEN round(100.0 * test_files / count(f2), 2)
-              ELSE 0 END as test_ratio
-  ORDER BY test_ratio DESC
-"
-
-# Find interface implementations
-gograph query "
-  MATCH (s:Struct)-[:IMPLEMENTS]->(i:Interface)
-  WHERE s.project_id = 'my-awesome-project'
-  RETURN i.name as Interface,
-         collect(s.name) as Implementations,
-         count(s) as ImplementationCount
-  ORDER BY ImplementationCount DESC
-"
-```
+For advanced analysis queries, see [docs/QUERIES.md](docs/QUERIES.md) which includes:
+- Finding unused functions
+- Analyzing test coverage by package  
+- Finding interface implementations
+- Detecting circular dependencies
+- Identifying code complexity hotspots
+- And many more analysis patterns!
 
 ### 6. Export and Share Results
 
@@ -569,33 +496,26 @@ export GOGRAPH_MCP_PORT=8080
 | `IMPLEMENTS` | Struct implements interface                               |
 | `HAS_METHOD` | Struct/interface has method                               |
 | `DEPENDS_ON` | File depends on another file                              |
-| `DECLARES`   | File declares function/struct/interface                   |
+| `DEFINES`    | File defines function/struct/interface                    |
 | `USES`       | Function uses variable/constant                           |
 
 ### Example Queries
 
+For a comprehensive collection of Cypher queries organized by use case, see [docs/QUERIES.md](docs/QUERIES.md).
+
+Quick examples:
 ```cypher
--- Find all functions in a package
-MATCH (p:Package {name: "main"})-[:CONTAINS]->(f:File)-[:DECLARES]->(fn:Function)
-RETURN fn.name, fn.signature
-
--- Find circular dependencies
-MATCH path=(p1:Package)-[:IMPORTS*]->(p1)
-RETURN path
-
 -- Find most called functions
 MATCH (f:Function)<-[:CALLS]-(caller)
+WHERE f.project_id = 'my-project'
 RETURN f.name, count(caller) as call_count
 ORDER BY call_count DESC
+LIMIT 10
 
--- Find unused functions
-MATCH (f:Function)
-WHERE NOT (f)<-[:CALLS]-()
-RETURN f.name, f.package
-
--- Find interface implementations
+-- Find interface implementations  
 MATCH (s:Struct)-[:IMPLEMENTS]->(i:Interface)
-RETURN s.name, i.name
+WHERE s.project_id = 'my-project'
+RETURN i.name as Interface, collect(s.name) as Implementations
 ```
 
 ## 🤖 MCP Integration
@@ -817,6 +737,7 @@ Inspired by:
 ## 🔗 Links
 
 - [Documentation](docs/)
+- [Query Reference Guide](docs/QUERIES.md)
 - [MCP Integration Guide](docs/MCP_INTEGRATION.md)
 - [Issue Tracker](https://github.com/compozy/gograph/issues)
 - [Discussions](https://github.com/compozy/gograph/discussions)

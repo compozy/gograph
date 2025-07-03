@@ -243,6 +243,33 @@ func (s *Server) registerQueryTools() {
 		mcp.WithString("context", mcp.Description("Additional context for the query")),
 	)
 	s.mcpServer.AddTool(naturalLanguageQueryTool, s.handleNaturalLanguageQuery)
+
+	// get_database_schema tool
+	getDatabaseSchemaTool := mcp.NewTool(
+		"get_database_schema",
+		mcp.WithDescription(
+			"Get Neo4j database schema with node types, relationships, and properties for LLM query assistance",
+		),
+		mcp.WithString(
+			"project_id",
+			mcp.Description("Project identifier (optional - will be derived from config if not provided)"),
+		),
+		mcp.WithBoolean("include_examples", mcp.Description("Include example queries for each node/relationship type")),
+		mcp.WithString("filter_type", mcp.Description("Filter by specific node/relationship type")),
+	)
+	s.mcpServer.AddTool(getDatabaseSchemaTool, s.handleGetDatabaseSchema)
+
+	// validate_cypher_query tool
+	validateCypherQueryTool := mcp.NewTool(
+		"validate_cypher_query",
+		mcp.WithDescription("Validate Cypher query syntax and suggest corrections for common mistakes"),
+		mcp.WithString("query", mcp.Required(), mcp.Description("Cypher query to validate")),
+		mcp.WithString(
+			"project_id",
+			mcp.Description("Project identifier (optional - will be derived from config if not provided)"),
+		),
+	)
+	s.mcpServer.AddTool(validateCypherQueryTool, s.handleValidateCypherQuery)
 }
 
 // registerVerificationTools registers code verification tools
@@ -880,4 +907,39 @@ func (s *Server) setCache(key string, result any) {
 		}
 		delete(s.cache, oldestKey)
 	}
+}
+
+func (s *Server) handleGetDatabaseSchema(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	projectID := getString(req, "project_id")
+	includeExamples := getBool(req, "include_examples")
+	filterType := getString(req, "filter_type")
+
+	response, err := s.HandleGetDatabaseSchemaInternal(ctx, map[string]any{
+		"project_id":       projectID,
+		"include_examples": includeExamples,
+		"filter_type":      filterType,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return newToolResultFromResponse(response)
+}
+
+func (s *Server) handleValidateCypherQuery(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	query, err := req.RequireString("query")
+	if err != nil {
+		return nil, err
+	}
+	projectID := getString(req, "project_id")
+
+	response, err := s.HandleValidateCypherQueryInternal(ctx, map[string]any{
+		"query":      query,
+		"project_id": projectID,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return newToolResultFromResponse(response)
 }

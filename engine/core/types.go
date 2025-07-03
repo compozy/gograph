@@ -29,9 +29,9 @@ const (
 	NodeTypeStruct    NodeType = "Struct"
 	NodeTypeInterface NodeType = "Interface"
 	NodeTypeMethod    NodeType = "Method"
+	NodeTypeImport    NodeType = "Import"
 	NodeTypeConstant  NodeType = "Constant"
 	NodeTypeVariable  NodeType = "Variable"
-	NodeTypeImport    NodeType = "Import"
 )
 
 // RelationType represents the type of relationship between nodes

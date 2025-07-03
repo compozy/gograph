@@ -17,22 +17,6 @@ type MockParserService struct {
 	mock.Mock
 }
 
-func (m *MockParserService) ParseFile(ctx context.Context, filePath string) (*parser.FileInfo, error) {
-	args := m.Called(ctx, filePath)
-	if result := args.Get(0); result != nil {
-		return result.(*parser.FileInfo), args.Error(1)
-	}
-	return nil, args.Error(1)
-}
-
-func (m *MockParserService) ParseDirectory(ctx context.Context, dirPath string) ([]*parser.FileInfo, error) {
-	args := m.Called(ctx, dirPath)
-	if result := args.Get(0); result != nil {
-		return result.([]*parser.FileInfo), args.Error(1)
-	}
-	return nil, args.Error(1)
-}
-
 func (m *MockParserService) ParseProject(
 	ctx context.Context,
 	projectPath string,

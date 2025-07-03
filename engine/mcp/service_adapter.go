@@ -36,11 +36,13 @@ func NewServiceAdapter(
 // ParseProject parses a Go project
 func (s *serviceAdapter) ParseProject(ctx context.Context, projectPath string) (*parser.ParseResult, error) {
 	config := &parser.Config{
-		IgnoreDirs:     []string{".git", "vendor", "node_modules"},
-		IgnoreFiles:    []string{},
-		IncludeTests:   false,
-		IncludeVendor:  false,
-		MaxConcurrency: 4,
+		IgnoreDirs:             []string{".git", "vendor", "node_modules"},
+		IgnoreFiles:            []string{},
+		IncludeTests:           false,
+		IncludeVendor:          false,
+		EnableSSA:              true,
+		EnableCallGraph:        true,
+		EnablePerformanceStats: true,
 	}
 	return s.parserService.ParseProject(ctx, projectPath, config)
 }
@@ -49,11 +51,11 @@ func (s *serviceAdapter) ParseProject(ctx context.Context, projectPath string) (
 func (s *serviceAdapter) AnalyzeProject(
 	ctx context.Context,
 	projectID core.ID,
-	files []*parser.FileInfo,
+	parseResult *parser.ParseResult,
 ) (*analyzer.AnalysisReport, error) {
 	input := &analyzer.AnalysisInput{
-		ProjectID: string(projectID),
-		Files:     files,
+		ProjectID:   string(projectID),
+		ParseResult: parseResult,
 	}
 	return s.analyzerService.AnalyzeProject(ctx, input)
 }

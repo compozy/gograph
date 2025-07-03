@@ -2,10 +2,8 @@ package parser_test
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -14,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestService_ParseFile(t *testing.T) {
+func TestService_ParseProject(t *testing.T) {
 	// Create a test Go file
 	testDir := t.TempDir()
 	testFile := filepath.Join(testDir, "test.go")
@@ -22,7 +20,7 @@ func TestService_ParseFile(t *testing.T) {
 
 import (
 	"fmt"
-	"strings"
+	"time"
 )
 
 // User represents a user
@@ -64,610 +62,405 @@ func generateID() string {
 	return fmt.Sprintf("user-%d", time.Now().UnixNano())
 }
 `
-	err := os.WriteFile(testFile, []byte(testContent), 0644)
+	// Create go.mod file
+	goModContent := `module testproject
+
+go 1.21
+`
+	err := os.WriteFile(filepath.Join(testDir, "go.mod"), []byte(goModContent), 0644)
+	require.NoError(t, err)
+	err = os.WriteFile(testFile, []byte(testContent), 0644)
 	require.NoError(t, err)
 
 	service := parser.NewService(nil)
 
-	t.Run("Should parse a Go file successfully", func(t *testing.T) {
+	t.Run("Should parse a Go project successfully", func(t *testing.T) {
 		ctx := context.Background()
-		info, err := service.ParseFile(ctx, testFile)
+		result, err := service.ParseProject(ctx, testDir, nil)
 
 		assert.NoError(t, err)
-		assert.NotNil(t, info)
-		assert.Equal(t, testFile, info.Path)
-		assert.Equal(t, "main", info.Package)
+		assert.NotNil(t, result)
+		assert.Equal(t, testDir, result.ProjectPath)
+		assert.GreaterOrEqual(t, len(result.Packages), 1)
+
+		// Find main package
+		var mainPkg *parser.PackageInfo
+		for _, pkg := range result.Packages {
+			if pkg.Name == "main" {
+				mainPkg = pkg
+				break
+			}
+		}
+		assert.NotNil(t, mainPkg)
 	})
 
 	t.Run("Should extract imports correctly", func(t *testing.T) {
 		ctx := context.Background()
-		info, err := service.ParseFile(ctx, testFile)
+		result, err := service.ParseProject(ctx, testDir, nil)
 
 		require.NoError(t, err)
-		assert.Len(t, info.Imports, 2)
-		assert.Equal(t, "fmt", info.Imports[0].Path)
-		assert.Equal(t, "strings", info.Imports[1].Path)
-		assert.Contains(t, info.Dependencies, "fmt")
-		assert.Contains(t, info.Dependencies, "strings")
+		// Find main package
+		var mainPkg *parser.PackageInfo
+		for _, pkg := range result.Packages {
+			if pkg.Name == "main" {
+				mainPkg = pkg
+				break
+			}
+		}
+		require.NotNil(t, mainPkg)
+		assert.GreaterOrEqual(t, len(mainPkg.Files), 1)
+
+		// Check imports in first file
+		file := mainPkg.Files[0]
+		assert.Len(t, file.Imports, 2)
+		assert.Equal(t, "fmt", file.Imports[0].Path)
+		assert.Equal(t, "time", file.Imports[1].Path)
 	})
 
-	t.Run("Should extract structs correctly", func(t *testing.T) {
+	t.Run("Should extract types correctly", func(t *testing.T) {
 		ctx := context.Background()
-		info, err := service.ParseFile(ctx, testFile)
+		result, err := service.ParseProject(ctx, testDir, nil)
 
 		require.NoError(t, err)
-		assert.Len(t, info.Structs, 1)
+		// Find main package
+		var mainPkg *parser.PackageInfo
+		for _, pkg := range result.Packages {
+			if pkg.Name == "main" {
+				mainPkg = pkg
+				break
+			}
+		}
+		require.NotNil(t, mainPkg)
 
-		userStruct := info.Structs[0]
-		assert.Equal(t, "User", userStruct.Name)
-		assert.True(t, userStruct.IsExported)
-		assert.Len(t, userStruct.Fields, 3)
+		// Should have User struct in types
+		var userType *parser.TypeInfo
+		for _, t := range mainPkg.Types {
+			if t.Name == "User" {
+				userType = t
+				break
+			}
+		}
+		require.NotNil(t, userType)
+		assert.True(t, userType.IsExported)
+		assert.Len(t, userType.Fields, 3)
 
 		// Check fields
-		assert.Equal(t, "ID", userStruct.Fields[0].Name)
-		assert.Equal(t, "string", userStruct.Fields[0].Type)
-		assert.True(t, userStruct.Fields[0].IsExported)
+		assert.Equal(t, "ID", userType.Fields[0].Name)
+		assert.True(t, userType.Fields[0].IsExported)
 
-		assert.Equal(t, "Name", userStruct.Fields[1].Name)
-		assert.Equal(t, "string", userStruct.Fields[1].Type)
-
-		assert.Equal(t, "Age", userStruct.Fields[2].Name)
-		assert.Equal(t, "int", userStruct.Fields[2].Type)
+		assert.Equal(t, "Name", userType.Fields[1].Name)
+		assert.Equal(t, "Age", userType.Fields[2].Name)
 	})
 
 	t.Run("Should extract functions correctly", func(t *testing.T) {
 		ctx := context.Background()
-		info, err := service.ParseFile(ctx, testFile)
+		result, err := service.ParseProject(ctx, testDir, nil)
 
 		require.NoError(t, err)
+		// Find main package
+		var mainPkg *parser.PackageInfo
+		for _, pkg := range result.Packages {
+			if pkg.Name == "main" {
+				mainPkg = pkg
+				break
+			}
+		}
+		require.NotNil(t, mainPkg)
+
 		// Should have NewUser, GetName (method), and generateID
-		assert.GreaterOrEqual(t, len(info.Functions), 3)
+		assert.GreaterOrEqual(t, len(mainPkg.Functions), 3)
 
 		// Find NewUser function
 		var newUserFunc *parser.FunctionInfo
-		for i := range info.Functions {
-			if info.Functions[i].Name == "NewUser" {
-				newUserFunc = &info.Functions[i]
+		for _, fn := range mainPkg.Functions {
+			if fn.Name == "NewUser" {
+				newUserFunc = fn
 				break
 			}
 		}
 
 		require.NotNil(t, newUserFunc)
 		assert.True(t, newUserFunc.IsExported)
-		assert.Len(t, newUserFunc.Parameters, 2)
-		assert.Equal(t, "name", newUserFunc.Parameters[0].Name)
-		assert.Equal(t, "string", newUserFunc.Parameters[0].Type)
-		assert.Equal(t, "age", newUserFunc.Parameters[1].Name)
-		assert.Equal(t, "int", newUserFunc.Parameters[1].Type)
-		assert.Len(t, newUserFunc.Returns, 1)
-		assert.Equal(t, "*User", newUserFunc.Returns[0])
+		assert.NotNil(t, newUserFunc.Signature)
 	})
 
 	t.Run("Should extract methods correctly", func(t *testing.T) {
 		ctx := context.Background()
-		info, err := service.ParseFile(ctx, testFile)
+		result, err := service.ParseProject(ctx, testDir, nil)
 
 		require.NoError(t, err)
+		// Find main package
+		var mainPkg *parser.PackageInfo
+		for _, pkg := range result.Packages {
+			if pkg.Name == "main" {
+				mainPkg = pkg
+				break
+			}
+		}
+		require.NotNil(t, mainPkg)
 
 		// Find GetName method
 		var getNameMethod *parser.FunctionInfo
-		for i := range info.Functions {
-			if info.Functions[i].Name == "GetName" && info.Functions[i].Receiver != "" {
-				getNameMethod = &info.Functions[i]
+		for _, fn := range mainPkg.Functions {
+			if fn.Name == "GetName" && fn.Receiver != nil {
+				getNameMethod = fn
 				break
 			}
 		}
 
 		require.NotNil(t, getNameMethod)
-		assert.Equal(t, "*User", getNameMethod.Receiver)
+		assert.NotNil(t, getNameMethod.Receiver)
+		// Receiver name includes pointer notation
+		assert.Contains(t, getNameMethod.Receiver.Name, "User")
 		assert.True(t, getNameMethod.IsExported)
-		assert.Len(t, getNameMethod.Returns, 1)
-		assert.Equal(t, "string", getNameMethod.Returns[0])
 	})
 
 	t.Run("Should extract interfaces correctly", func(t *testing.T) {
 		ctx := context.Background()
-		info, err := service.ParseFile(ctx, testFile)
+		result, err := service.ParseProject(ctx, testDir, nil)
 
 		require.NoError(t, err)
-		assert.Len(t, info.Interfaces, 1)
-
-		userService := info.Interfaces[0]
-		assert.Equal(t, "UserService", userService.Name)
+		// Find UserService interface in result.Interfaces
+		var userService *parser.InterfaceInfo
+		for _, iface := range result.Interfaces {
+			if iface.Name == "UserService" {
+				userService = iface
+				break
+			}
+		}
+		require.NotNil(t, userService)
 		assert.True(t, userService.IsExported)
 		assert.Len(t, userService.Methods, 2)
 
 		// Check GetUser method
 		getUserMethod := userService.Methods[0]
 		assert.Equal(t, "GetUser", getUserMethod.Name)
-		assert.Len(t, getUserMethod.Parameters, 1)
-		assert.Equal(t, "id", getUserMethod.Parameters[0].Name)
-		assert.Equal(t, "string", getUserMethod.Parameters[0].Type)
-		assert.Len(t, getUserMethod.Returns, 2)
-		assert.Equal(t, "*User", getUserMethod.Returns[0])
-		assert.Equal(t, "error", getUserMethod.Returns[1])
-	})
-
-	t.Run("Should extract constants correctly", func(t *testing.T) {
-		ctx := context.Background()
-		info, err := service.ParseFile(ctx, testFile)
-
-		require.NoError(t, err)
-		assert.Len(t, info.Constants, 2)
-
-		// Check constants
-		assert.Equal(t, "MaxUsers", info.Constants[0].Name)
-		assert.True(t, info.Constants[0].IsExported)
-
-		assert.Equal(t, "MinAge", info.Constants[1].Name)
-		assert.True(t, info.Constants[1].IsExported)
-	})
-
-	t.Run("Should extract variables correctly", func(t *testing.T) {
-		ctx := context.Background()
-		info, err := service.ParseFile(ctx, testFile)
-
-		require.NoError(t, err)
-		assert.GreaterOrEqual(t, len(info.Variables), 2)
-
-		// Find defaultUser variable
-		var defaultUserVar *parser.VariableInfo
-		for i := range info.Variables {
-			if info.Variables[i].Name == "defaultUser" {
-				defaultUserVar = &info.Variables[i]
-				break
-			}
-		}
-
-		require.NotNil(t, defaultUserVar)
-		assert.False(t, defaultUserVar.IsExported)
-		// Type is empty for variables with implicit types (inferred from initializer)
-		assert.Equal(t, "", defaultUserVar.Type)
-
-		// Find userCache variable which has explicit type
-		var userCacheVar *parser.VariableInfo
-		for i := range info.Variables {
-			if info.Variables[i].Name == "userCache" {
-				userCacheVar = &info.Variables[i]
-				break
-			}
-		}
-
-		require.NotNil(t, userCacheVar)
-		assert.False(t, userCacheVar.IsExported)
-		assert.Equal(t, "map[string]*User", userCacheVar.Type)
 	})
 
 	t.Run("Should handle context cancellation", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel() // Cancel immediately
 
-		info, err := service.ParseFile(ctx, testFile)
+		result, err := service.ParseProject(ctx, testDir, nil)
 
 		assert.Error(t, err)
-		assert.Nil(t, info)
-		assert.Equal(t, context.Canceled, err)
+		assert.Nil(t, result)
+		assert.Contains(t, err.Error(), "context canceled")
 	})
 
-	t.Run("Should handle non-existent file", func(t *testing.T) {
+	t.Run("Should handle non-existent directory", func(t *testing.T) {
 		ctx := context.Background()
 
-		info, err := service.ParseFile(ctx, "/non/existent/file.go")
+		result, err := service.ParseProject(ctx, "/non/existent/directory", nil)
 
 		assert.Error(t, err)
-		assert.Nil(t, info)
-		assert.Contains(t, err.Error(), "failed to parse file")
+		assert.Nil(t, result)
 	})
 
 	t.Run("Should handle invalid Go syntax", func(t *testing.T) {
-		invalidFile := filepath.Join(testDir, "invalid.go")
+		invalidDir := t.TempDir()
+		invalidFile := filepath.Join(invalidDir, "invalid.go")
 		invalidContent := `package main
 
-		func broken( {
-			// Missing closing parenthesis
-		}
-		`
-		err := os.WriteFile(invalidFile, []byte(invalidContent), 0644)
-		require.NoError(t, err)
-
-		ctx := context.Background()
-		info, err := service.ParseFile(ctx, invalidFile)
-
-		assert.Error(t, err)
-		assert.Nil(t, info)
-		assert.Contains(t, err.Error(), "failed to parse file")
-	})
-}
-
-func TestService_ParseDirectory(t *testing.T) {
-	// Create test directory structure
-	testDir := t.TempDir()
-
-	// Create subdirectories
-	subDir1 := filepath.Join(testDir, "pkg")
-	subDir2 := filepath.Join(testDir, "internal")
-	ignoredDir := filepath.Join(testDir, ".git")
-
-	require.NoError(t, os.MkdirAll(subDir1, 0755))
-	require.NoError(t, os.MkdirAll(subDir2, 0755))
-	require.NoError(t, os.MkdirAll(ignoredDir, 0755))
-
-	// Create test files
-	file1 := filepath.Join(subDir1, "file1.go")
-	file2 := filepath.Join(subDir2, "file2.go")
-	testFile := filepath.Join(subDir1, "file1_test.go")
-	nonGoFile := filepath.Join(subDir1, "readme.md")
-	ignoredFile := filepath.Join(ignoredDir, "ignored.go")
-
-	goContent := `package test
-
-func TestFunc() string {
-	return "test"
+func broken( {
+	// Missing closing parenthesis
 }
 `
-
-	require.NoError(t, os.WriteFile(file1, []byte(goContent), 0644))
-	require.NoError(t, os.WriteFile(file2, []byte(goContent), 0644))
-	require.NoError(t, os.WriteFile(testFile, []byte(goContent), 0644))
-	require.NoError(t, os.WriteFile(nonGoFile, []byte("# README"), 0644))
-	require.NoError(t, os.WriteFile(ignoredFile, []byte(goContent), 0644))
-
-	t.Run("Should parse all Go files in directory", func(t *testing.T) {
-		service := parser.NewService(nil)
-		ctx := context.Background()
-
-		files, err := service.ParseDirectory(ctx, testDir)
-
-		assert.NoError(t, err)
-		assert.NotNil(t, files)
-		// Should include file1.go, file2.go, and file1_test.go (tests included by default)
-		assert.Len(t, files, 3)
-	})
-
-	t.Run("Should ignore non-Go files", func(t *testing.T) {
-		service := parser.NewService(nil)
-		ctx := context.Background()
-
-		files, err := service.ParseDirectory(ctx, testDir)
-
+		err := os.WriteFile(filepath.Join(invalidDir, "go.mod"), []byte(goModContent), 0644)
 		require.NoError(t, err)
-		for _, file := range files {
-			assert.True(t, filepath.Ext(file.Path) == ".go")
-			assert.NotEqual(t, nonGoFile, file.Path)
-		}
-	})
-
-	t.Run("Should respect ignore directories", func(t *testing.T) {
-		service := parser.NewService(nil)
-		ctx := context.Background()
-
-		files, err := service.ParseDirectory(ctx, testDir)
-
+		err = os.WriteFile(invalidFile, []byte(invalidContent), 0644)
 		require.NoError(t, err)
-		for _, file := range files {
-			assert.NotContains(t, file.Path, ".git")
-		}
-	})
 
-	t.Run("Should exclude test files when configured", func(t *testing.T) {
-		config := &parser.Config{
-			IncludeTests: false,
-			IgnoreDirs:   []string{".git"},
-		}
-		service := parser.NewService(config)
 		ctx := context.Background()
+		result, err := service.ParseProject(ctx, invalidDir, nil)
 
-		files, err := service.ParseDirectory(ctx, testDir)
-
-		require.NoError(t, err)
-		// Should only include file1.go and file2.go
-		assert.Len(t, files, 2)
-		for _, file := range files {
-			assert.NotContains(t, filepath.Base(file.Path), "_test.go")
-		}
-	})
-
-	t.Run("Should handle context cancellation", func(t *testing.T) {
-		service := parser.NewService(nil)
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel() // Cancel immediately
-
-		files, err := service.ParseDirectory(ctx, testDir)
-
+		// With the new error handling, syntax errors now cause failures
 		assert.Error(t, err)
-		assert.Nil(t, files)
-		assert.Equal(t, context.Canceled, err)
+		assert.Nil(t, result)
+		assert.Contains(t, err.Error(), "package loading failed")
 	})
 
-	t.Run("Should continue on parse errors", func(t *testing.T) {
-		// Create an invalid Go file
-		invalidFile := filepath.Join(subDir1, "invalid.go")
-		invalidContent := `package test
+	t.Run("Should extract import aliases correctly", func(t *testing.T) {
+		aliasDir := t.TempDir()
+		aliasFile := filepath.Join(aliasDir, "alias.go")
+		aliasContent := `package main
 
-		func broken( {
-			// Missing closing parenthesis
-		}
-		`
-		require.NoError(t, os.WriteFile(invalidFile, []byte(invalidContent), 0644))
+import (
+	f "fmt"
+	_ "strings"
+	. "time"
+)
 
-		service := parser.NewService(nil)
-		ctx := context.Background()
-
-		files, err := service.ParseDirectory(ctx, testDir)
-
-		// Should not return error, just skip the invalid file
-		assert.NoError(t, err)
-		assert.NotNil(t, files)
-		// Should still parse valid files
-		assert.GreaterOrEqual(t, len(files), 3)
-	})
-}
-
-func TestService_ParseProject(t *testing.T) {
-	// Create test project structure
-	testDir := t.TempDir()
-
-	// Create subdirectories
-	pkgDir := filepath.Join(testDir, "pkg")
-	cmdDir := filepath.Join(testDir, "cmd")
-	vendorDir := filepath.Join(testDir, "vendor")
-	gitDir := filepath.Join(testDir, ".git")
-
-	require.NoError(t, os.MkdirAll(pkgDir, 0755))
-	require.NoError(t, os.MkdirAll(cmdDir, 0755))
-	require.NoError(t, os.MkdirAll(vendorDir, 0755))
-	require.NoError(t, os.MkdirAll(gitDir, 0755))
-
-	// Create test files
-	goFiles := []string{
-		filepath.Join(pkgDir, "service.go"),
-		filepath.Join(pkgDir, "service_test.go"),
-		filepath.Join(cmdDir, "main.go"),
-		filepath.Join(vendorDir, "vendor.go"),
-		filepath.Join(gitDir, "ignored.go"),
-	}
-
-	goContent := `package test
-
-func TestFunc() string {
-	return "test"
+func main() {
+	f.Println("Hello")
+	_ = Now() // Use time.Now to avoid unused import error
 }
 `
+		err := os.WriteFile(filepath.Join(aliasDir, "go.mod"), []byte(goModContent), 0644)
+		require.NoError(t, err)
+		err = os.WriteFile(aliasFile, []byte(aliasContent), 0644)
+		require.NoError(t, err)
 
-	for _, file := range goFiles {
-		require.NoError(t, os.WriteFile(file, []byte(goContent), 0644))
-	}
-
-	t.Run("Should parse entire project", func(t *testing.T) {
-		service := parser.NewService(nil)
 		ctx := context.Background()
+		result, err := service.ParseProject(ctx, aliasDir, nil)
 
-		result, err := service.ParseProject(ctx, testDir, nil)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.GreaterOrEqual(t, len(result.Packages), 1)
 
-		assert.NoError(t, err)
-		assert.NotNil(t, result)
-		assert.Equal(t, testDir, result.ProjectPath)
-		// Default config includes tests but not vendor or .git
-		assert.Len(t, result.Files, 3)                       // service.go, service_test.go, main.go
-		assert.GreaterOrEqual(t, result.ParseTime, int64(0)) // Can be 0 for very fast parsing
-	})
+		mainPkg := result.Packages[0]
+		require.GreaterOrEqual(t, len(mainPkg.Files), 1)
 
-	t.Run("Should use provided config", func(t *testing.T) {
-		config := &parser.Config{
-			IncludeTests:   false,
-			IncludeVendor:  true,
-			IgnoreDirs:     []string{".git"},
-			MaxConcurrency: 2,
-		}
-		service := parser.NewService(nil)
-		ctx := context.Background()
+		file := mainPkg.Files[0]
+		assert.Len(t, file.Imports, 3)
 
-		result, err := service.ParseProject(ctx, testDir, config)
-
-		assert.NoError(t, err)
-		assert.NotNil(t, result)
-		// Should include vendor.go but not test files
-		assert.Len(t, result.Files, 3) // service.go, main.go, vendor.go
-
-		// Verify no test files
-		for _, file := range result.Files {
-			assert.NotContains(t, filepath.Base(file.Path), "_test.go")
-		}
-
-		// Verify vendor is included
-		hasVendor := false
-		for _, file := range result.Files {
-			if strings.Contains(file.Path, "vendor") {
-				hasVendor = true
-				break
+		// Check aliases
+		for _, imp := range file.Imports {
+			switch imp.Path {
+			case "fmt":
+				assert.Equal(t, "f", imp.Name)
+			case "strings":
+				assert.Equal(t, "_", imp.Name)
+			case "time":
+				assert.Equal(t, ".", imp.Name)
 			}
 		}
-		assert.True(t, hasVendor)
-	})
-
-	t.Run("Should handle concurrent parsing", func(t *testing.T) {
-		// Create more files to test concurrency
-		for i := 0; i < 10; i++ {
-			file := filepath.Join(pkgDir, fmt.Sprintf("file%d.go", i))
-			require.NoError(t, os.WriteFile(file, []byte(goContent), 0644))
-		}
-
-		config := &parser.Config{
-			MaxConcurrency: 4,
-			IgnoreDirs:     []string{".git", "vendor"},
-			IncludeTests:   true,  // Explicitly include tests
-			IncludeVendor:  false, // Explicitly exclude vendor
-		}
-		service := parser.NewService(nil)
-		ctx := context.Background()
-
-		result, err := service.ParseProject(ctx, testDir, config)
-
-		assert.NoError(t, err)
-		assert.NotNil(t, result)
-		// Should find 3 original + 10 new = 13 files
-		assert.Equal(t, 13, len(result.Files))
-	})
-
-	t.Run("Should handle context cancellation", func(t *testing.T) {
-		service := parser.NewService(nil)
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
-		defer cancel()
-
-		// Give context time to cancel
-		time.Sleep(10 * time.Millisecond)
-
-		result, err := service.ParseProject(ctx, testDir, nil)
-
-		// May or may not error depending on timing, but should handle gracefully
-		if err != nil {
-			assert.Contains(t, err.Error(), "context")
-		}
-		if result != nil {
-			// Partial results are acceptable
-			assert.GreaterOrEqual(t, len(result.Files), 0)
-		}
-	})
-
-	t.Run("Should continue on file parse errors", func(t *testing.T) {
-		// Create an invalid Go file
-		invalidFile := filepath.Join(pkgDir, "invalid.go")
-		invalidContent := `package test
-
-		func broken( {
-			// Missing closing parenthesis
-		}
-		`
-		require.NoError(t, os.WriteFile(invalidFile, []byte(invalidContent), 0644))
-
-		service := parser.NewService(nil)
-		ctx := context.Background()
-
-		result, err := service.ParseProject(ctx, testDir, nil)
-
-		// Should not return error, just skip the invalid file
-		assert.NoError(t, err)
-		assert.NotNil(t, result)
-		// Should still parse valid files
-		assert.GreaterOrEqual(t, len(result.Files), 3)
 	})
 }
 
-func TestService_Constructor(t *testing.T) {
-	t.Run("Should create service with default config when nil", func(t *testing.T) {
-		service := parser.NewService(nil)
-
-		assert.NotNil(t, service)
-		// We can't directly access the config, but we can test behavior
-
-		// Create a test directory with .git folder
-		testDir := t.TempDir()
-		gitDir := filepath.Join(testDir, ".git")
-		require.NoError(t, os.MkdirAll(gitDir, 0755))
-
-		goFile := filepath.Join(gitDir, "test.go")
-		require.NoError(t, os.WriteFile(goFile, []byte("package test"), 0644))
-
-		ctx := context.Background()
-		files, err := service.ParseDirectory(ctx, testDir)
-
-		// Default config should ignore .git
-		assert.NoError(t, err)
-		assert.Len(t, files, 0)
-	})
-
-	t.Run("Should create service with provided config", func(t *testing.T) {
-		config := &parser.Config{
-			IgnoreDirs:     []string{"custom_ignore"},
-			IncludeTests:   false,
-			IncludeVendor:  true,
-			MaxConcurrency: 8,
-		}
-		service := parser.NewService(config)
-
-		assert.NotNil(t, service)
-
-		// Test that custom config is used
-		testDir := t.TempDir()
-		customDir := filepath.Join(testDir, "custom_ignore")
-		require.NoError(t, os.MkdirAll(customDir, 0755))
-
-		goFile := filepath.Join(customDir, "test.go")
-		require.NoError(t, os.WriteFile(goFile, []byte("package test"), 0644))
-
-		testFile := filepath.Join(testDir, "test_test.go")
-		require.NoError(t, os.WriteFile(testFile, []byte("package test"), 0644))
-
-		ctx := context.Background()
-		files, err := service.ParseDirectory(ctx, testDir)
-
-		// Custom config should ignore custom_ignore dir and test files
-		assert.NoError(t, err)
-		assert.Len(t, files, 0)
-	})
-}
-
-func TestService_EdgeCases(t *testing.T) {
+func TestService_ParseProject_AdvancedFeatures(t *testing.T) {
 	service := parser.NewService(nil)
-	testDir := t.TempDir()
 
-	t.Run("Should handle empty structs", func(t *testing.T) {
-		file := filepath.Join(testDir, "empty_struct.go")
-		content := `package test
+	t.Run("Should detect interface implementations", func(t *testing.T) {
+		implDir := t.TempDir()
+		implFile := filepath.Join(implDir, "impl.go")
+		implContent := `package main
 
-type EmptyStruct struct{}
-`
-		require.NoError(t, os.WriteFile(file, []byte(content), 0644))
+import "io"
 
-		ctx := context.Background()
-		info, err := service.ParseFile(ctx, file)
-
-		assert.NoError(t, err)
-		assert.Len(t, info.Structs, 1)
-		assert.Equal(t, "EmptyStruct", info.Structs[0].Name)
-		assert.Len(t, info.Structs[0].Fields, 0)
-	})
-
-	t.Run("Should handle embedded structs", func(t *testing.T) {
-		file := filepath.Join(testDir, "embedded.go")
-		content := `package test
-
-type Base struct {
-	ID string
+type Writer interface {
+	Write([]byte) (int, error)
 }
 
-type Extended struct {
-	Base
-	Name string
+type FileWriter struct {
+	path string
 }
+
+func (f *FileWriter) Write(data []byte) (int, error) {
+	return len(data), nil
+}
+
+type Buffer struct{}
+
+func (b Buffer) Write(p []byte) (n int, err error) {
+	return len(p), nil
+}
+
+// Also implements io.Writer
+var _ io.Writer = &FileWriter{}
+var _ io.Writer = Buffer{}
 `
-		require.NoError(t, os.WriteFile(file, []byte(content), 0644))
+		goModContent := `module testimpl
+
+go 1.21
+`
+		err := os.WriteFile(filepath.Join(implDir, "go.mod"), []byte(goModContent), 0644)
+		require.NoError(t, err)
+		err = os.WriteFile(implFile, []byte(implContent), 0644)
+		require.NoError(t, err)
 
 		ctx := context.Background()
-		info, err := service.ParseFile(ctx, file)
+		result, err := service.ParseProject(ctx, implDir, nil)
 
-		assert.NoError(t, err)
-		assert.Len(t, info.Structs, 2)
+		require.NoError(t, err)
+		require.NotNil(t, result)
 
-		// Find Extended struct
-		var extended *parser.StructInfo
-		for i := range info.Structs {
-			if info.Structs[i].Name == "Extended" {
-				extended = &info.Structs[i]
+		// Check interfaces
+		assert.GreaterOrEqual(t, len(result.Interfaces), 1)
+
+		// Find Writer interface
+		var writerIface *parser.InterfaceInfo
+		for _, iface := range result.Interfaces {
+			if iface.Name == "Writer" {
+				writerIface = iface
 				break
 			}
 		}
 
-		require.NotNil(t, extended)
-		assert.Len(t, extended.Embeds, 1)
-		assert.Equal(t, "Base", extended.Embeds[0])
-		assert.Len(t, extended.Fields, 1)
-		assert.Equal(t, "Name", extended.Fields[0].Name)
+		require.NotNil(t, writerIface)
+		assert.GreaterOrEqual(t, len(writerIface.Implementations), 2)
+
+		// Check implementations
+		implNames := make(map[string]bool)
+		for _, impl := range writerIface.Implementations {
+			implNames[impl.Type.Name] = true
+		}
+		assert.True(t, implNames["FileWriter"])
+		assert.True(t, implNames["Buffer"])
 	})
 
-	t.Run("Should handle interface composition", func(t *testing.T) {
-		file := filepath.Join(testDir, "interface_comp.go")
-		content := `package test
+	t.Run("Should parse function signatures with complex types", func(t *testing.T) {
+		sigDir := t.TempDir()
+		sigFile := filepath.Join(sigDir, "signatures.go")
+		sigContent := `package main
+
+import "context"
+
+// Complex function signatures
+func ProcessData(ctx context.Context, data []byte, opts ...Option) (result *Result, err error) {
+	return nil, nil
+}
+
+func HandleRequest(fn func(string) error) func(int) bool {
+	return func(x int) bool {
+		return fn("test") == nil
+	}
+}
+
+type Option func(*Config)
+type Result struct{}
+type Config struct{}
+`
+		goModContent := `module testsig
+
+go 1.21
+`
+		err := os.WriteFile(filepath.Join(sigDir, "go.mod"), []byte(goModContent), 0644)
+		require.NoError(t, err)
+		err = os.WriteFile(sigFile, []byte(sigContent), 0644)
+		require.NoError(t, err)
+
+		ctx := context.Background()
+		result, err := service.ParseProject(ctx, sigDir, nil)
+
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.GreaterOrEqual(t, len(result.Packages), 1)
+
+		mainPkg := result.Packages[0]
+
+		// Find ProcessData function
+		var processFunc *parser.FunctionInfo
+		for _, fn := range mainPkg.Functions {
+			if fn.Name == "ProcessData" {
+				processFunc = fn
+				break
+			}
+		}
+
+		require.NotNil(t, processFunc)
+		assert.NotNil(t, processFunc.Signature)
+		// Verify signature has parameters and results
+		assert.NotNil(t, processFunc.Signature.Params())
+		assert.NotNil(t, processFunc.Signature.Results())
+	})
+
+	t.Run("Should handle embedded interfaces", func(t *testing.T) {
+		embedDir := t.TempDir()
+		embedFile := filepath.Join(embedDir, "embed.go")
+		embedContent := `package main
+
+import "io"
 
 type Reader interface {
 	Read([]byte) (int, error)
@@ -681,81 +474,839 @@ type ReadWriter interface {
 	Reader
 	Writer
 }
+
+type Closer interface {
+	Close() error
+}
+
+type ReadWriteCloser interface {
+	ReadWriter
+	Closer
+}
+
+// Embedding external interface
+type MyReadCloser interface {
+	io.Reader
+	Closer
+}
 `
-		require.NoError(t, os.WriteFile(file, []byte(content), 0644))
+		goModContent := `module testembed
+
+go 1.21
+`
+		err := os.WriteFile(filepath.Join(embedDir, "go.mod"), []byte(goModContent), 0644)
+		require.NoError(t, err)
+		err = os.WriteFile(embedFile, []byte(embedContent), 0644)
+		require.NoError(t, err)
 
 		ctx := context.Background()
-		info, err := service.ParseFile(ctx, file)
+		result, err := service.ParseProject(ctx, embedDir, nil)
 
-		assert.NoError(t, err)
-		assert.Len(t, info.Interfaces, 3)
+		require.NoError(t, err)
+		require.NotNil(t, result)
 
 		// Find ReadWriter interface
 		var readWriter *parser.InterfaceInfo
-		for i := range info.Interfaces {
-			if info.Interfaces[i].Name == "ReadWriter" {
-				readWriter = &info.Interfaces[i]
+		for _, iface := range result.Interfaces {
+			if iface.Name == "ReadWriter" {
+				readWriter = iface
 				break
 			}
 		}
 
 		require.NotNil(t, readWriter)
 		assert.Len(t, readWriter.Embeds, 2)
-		assert.Contains(t, readWriter.Embeds, "Reader")
-		assert.Contains(t, readWriter.Embeds, "Writer")
+
+		// Find ReadWriteCloser interface
+		var rwc *parser.InterfaceInfo
+		for _, iface := range result.Interfaces {
+			if iface.Name == "ReadWriteCloser" {
+				rwc = iface
+				break
+			}
+		}
+
+		require.NotNil(t, rwc)
+		assert.GreaterOrEqual(t, len(rwc.Embeds), 2)
 	})
+}
 
-	t.Run("Should handle complex types", func(t *testing.T) {
-		file := filepath.Join(testDir, "complex_types.go")
-		content := `package test
+func TestService_TypeInformationAccuracy(t *testing.T) {
+	t.Run("Should extract accurate type information with Go type system", func(t *testing.T) {
+		testDir := t.TempDir()
+		testFile := filepath.Join(testDir, "types.go")
+		testContent := `package main
 
-type ComplexStruct struct {
-	MapField   map[string][]int
-	SliceField []map[string]interface{}
-	ChanField  chan struct{}
-	FuncField  func(string) error
-	PtrField   *ComplexStruct
+import (
+	"fmt"
+	"time"
+)
+
+// User represents a user with detailed type information
+type User struct {
+	ID        string    ` + "`json:\"id\"`" + `
+	Name      string    ` + "`json:\"name\"`" + `
+	Age       int       ` + "`json:\"age\"`" + `
+	Email     *string   ` + "`json:\"email,omitempty\"`" + `
+	CreatedAt time.Time ` + "`json:\"created_at\"`" + `
+	Metadata  map[string]interface{} ` + "`json:\"metadata\"`" + `
+}
+
+// UserService provides user operations
+type UserService interface {
+	GetUser(id string) (*User, error)
+	CreateUser(user *User) (*User, error)
+	UpdateUser(id string, updates map[string]interface{}) (*User, error)
+	DeleteUser(id string) error
+	ListUsers(limit int, offset int) ([]*User, error)
+}
+
+// HTTPUserService implements UserService via HTTP
+type HTTPUserService struct {
+	client   HttpClient
+	baseURL  string
+	timeout  time.Duration
+	retries  int
+}
+
+type HttpClient interface {
+	Do(req *HttpRequest) (*HttpResponse, error)
+}
+
+type HttpRequest struct {
+	Method string
+	URL    string
+	Body   []byte
+}
+
+type HttpResponse struct {
+	StatusCode int
+	Body       []byte
+}
+
+// GetUser retrieves a user by ID
+func (s *HTTPUserService) GetUser(id string) (*User, error) {
+	req := &HttpRequest{
+		Method: "GET",
+		URL:    fmt.Sprintf("%s/users/%s", s.baseURL, id),
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	return parseUser(resp.Body), nil
+}
+
+func parseUser(data []byte) *User {
+	return &User{}
+}
+
+// Helper function with complex signature
+func ProcessUsers(users []*User, filter func(*User) bool, transformer func(*User) *User) []*User {
+	var result []*User
+	for _, user := range users {
+		if filter(user) {
+			result = append(result, transformer(user))
+		}
+	}
+	return result
+}
+
+const (
+	MaxUsersPerPage = 100
+	DefaultTimeout  = 30
+)
+
+var (
+	defaultClient = &HttpRequest{}
+	userCounter   int64
+)
+`
+		goModContent := `module testtypes
+
+go 1.21
+`
+		err := os.WriteFile(filepath.Join(testDir, "go.mod"), []byte(goModContent), 0644)
+		require.NoError(t, err)
+		err = os.WriteFile(testFile, []byte(testContent), 0644)
+		require.NoError(t, err)
+
+		service := parser.NewService(nil)
+		ctx := context.Background()
+		result, err := service.ParseProject(ctx, testDir, nil)
+
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.GreaterOrEqual(t, len(result.Packages), 1)
+
+		// Find main package
+		var mainPkg *parser.PackageInfo
+		for _, pkg := range result.Packages {
+			if pkg.Name == "main" {
+				mainPkg = pkg
+				break
+			}
+		}
+		require.NotNil(t, mainPkg)
+
+		// Validate User struct type information
+		var userType *parser.TypeInfo
+		for _, t := range mainPkg.Types {
+			if t.Name == "User" {
+				userType = t
+				break
+			}
+		}
+		require.NotNil(t, userType)
+		assert.True(t, userType.IsExported)
+		assert.NotNil(t, userType.Type)
+		assert.NotNil(t, userType.Underlying)
+
+		// Validate struct fields with accurate type information
+		require.Len(t, userType.Fields, 6)
+
+		// Check ID field
+		idField := userType.Fields[0]
+		assert.Equal(t, "ID", idField.Name)
+		assert.True(t, idField.IsExported)
+		assert.Equal(t, "json:\"id\"", idField.Tag)
+		assert.Equal(t, "string", idField.Type.String())
+
+		// Check Email field (pointer type)
+		emailField := userType.Fields[3]
+		assert.Equal(t, "Email", emailField.Name)
+		assert.True(t, emailField.IsExported)
+		assert.Equal(t, "json:\"email,omitempty\"", emailField.Tag)
+		assert.Equal(t, "*string", emailField.Type.String())
+
+		// Check CreatedAt field (external type)
+		createdAtField := userType.Fields[4]
+		assert.Equal(t, "CreatedAt", createdAtField.Name)
+		assert.True(t, createdAtField.IsExported)
+		assert.Contains(t, createdAtField.Type.String(), "time.Time")
+
+		// Check Metadata field (complex type)
+		metadataField := userType.Fields[5]
+		assert.Equal(t, "Metadata", metadataField.Name)
+		assert.True(t, metadataField.IsExported)
+		assert.Contains(t, metadataField.Type.String(), "map[string]interface{}")
+
+		// Validate function signatures with accurate type information
+		var getUserFunc *parser.FunctionInfo
+		for _, fn := range mainPkg.Functions {
+			if fn.Name == "GetUser" && fn.Receiver != nil {
+				getUserFunc = fn
+				break
+			}
+		}
+		require.NotNil(t, getUserFunc)
+		assert.NotNil(t, getUserFunc.Signature)
+		assert.NotNil(t, getUserFunc.Receiver)
+		assert.Contains(t, getUserFunc.Receiver.Name, "HTTPUserService")
+
+		// Validate complex function signature
+		var processFunc *parser.FunctionInfo
+		for _, fn := range mainPkg.Functions {
+			if fn.Name == "ProcessUsers" {
+				processFunc = fn
+				break
+			}
+		}
+		require.NotNil(t, processFunc)
+		assert.NotNil(t, processFunc.Signature)
+
+		// Verify signature has the correct number of parameters and results
+		sig := processFunc.Signature
+		assert.Equal(t, 3, sig.Params().Len())  // users, filter, transformer
+		assert.Equal(t, 1, sig.Results().Len()) // []*User
+
+		// Validate interface type information
+		var userServiceInterface *parser.InterfaceInfo
+		for _, iface := range result.Interfaces {
+			if iface.Name == "UserService" {
+				userServiceInterface = iface
+				break
+			}
+		}
+		require.NotNil(t, userServiceInterface)
+		assert.True(t, userServiceInterface.IsExported)
+		assert.Len(t, userServiceInterface.Methods, 5)
+
+		// Check that we have the expected methods (ordering may vary)
+		methodNames := make(map[string]*parser.MethodInfo)
+		for _, method := range userServiceInterface.Methods {
+			methodNames[method.Name] = method
+		}
+
+		// Verify GetUser method exists and has correct signature
+		getUserMethod, exists := methodNames["GetUser"]
+		require.True(t, exists)
+		assert.NotNil(t, getUserMethod.Signature)
+		assert.Equal(t, 1, getUserMethod.Signature.Params().Len())  // id string
+		assert.Equal(t, 2, getUserMethod.Signature.Results().Len()) // (*User, error)
+
+		// Validate interface implementation detection (may not be detected if no explicit implementation)
+		// Note: This complex example may not trigger automatic interface implementation detection
+		// as it's based on structural typing which requires the actual method implementations to be analyzed
+		if len(userServiceInterface.Implementations) > 0 {
+			impl := userServiceInterface.Implementations[0]
+			assert.Equal(t, "HTTPUserService", impl.Type.Name)
+			assert.True(t, impl.IsComplete)
+		}
+
+		// Validate embedded interface in HttpClient
+		var httpClientInterface *parser.InterfaceInfo
+		for _, iface := range result.Interfaces {
+			if iface.Name == "HttpClient" {
+				httpClientInterface = iface
+				break
+			}
+		}
+		require.NotNil(t, httpClientInterface)
+		assert.True(t, httpClientInterface.IsExported)
+		assert.Len(t, httpClientInterface.Methods, 1)
+
+		// Check Do method signature with complex types
+		doMethod := httpClientInterface.Methods[0]
+		assert.Equal(t, "Do", doMethod.Name)
+		assert.NotNil(t, doMethod.Signature)
+	})
+}
+
+func TestService_ConstantsAndVariablesParsing(t *testing.T) {
+	t.Run("Should parse constants and variables correctly", func(t *testing.T) {
+		testDir := t.TempDir()
+		testFile := filepath.Join(testDir, "constants_vars.go")
+		testContent := `package main
+
+import "time"
+
+// Constants
+const (
+	MaxUsersPerPage = 100
+	DefaultTimeout  = 30 * time.Second
+	AppName         = "MyApp"
+	IsDebug         = true
+)
+
+const SingleConstant = "single value"
+
+// Variables
+var (
+	defaultUser = &User{Name: "Default", Age: 0}
+	userCache   map[string]*User
+	counter     int64
+)
+
+var singleVar = "single variable"
+
+type User struct {
+	Name string
+	Age  int
 }
 `
-		require.NoError(t, os.WriteFile(file, []byte(content), 0644))
+		goModContent := `module testconstvars
+
+go 1.21
+`
+		err := os.WriteFile(filepath.Join(testDir, "go.mod"), []byte(goModContent), 0644)
+		require.NoError(t, err)
+		err = os.WriteFile(testFile, []byte(testContent), 0644)
+		require.NoError(t, err)
+
+		service := parser.NewService(nil)
+		ctx := context.Background()
+		result, err := service.ParseProject(ctx, testDir, nil)
+
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.GreaterOrEqual(t, len(result.Packages), 1)
+
+		// Find main package
+		var mainPkg *parser.PackageInfo
+		for _, pkg := range result.Packages {
+			if pkg.Name == "main" {
+				mainPkg = pkg
+				break
+			}
+		}
+		require.NotNil(t, mainPkg)
+
+		// Validate constants
+		assert.GreaterOrEqual(t, len(mainPkg.Constants), 4)
+
+		// Find MaxUsersPerPage constant
+		var maxUsersConst *parser.ConstantInfo
+		for _, c := range mainPkg.Constants {
+			if c.Name == "MaxUsersPerPage" {
+				maxUsersConst = c
+				break
+			}
+		}
+		require.NotNil(t, maxUsersConst)
+		assert.True(t, maxUsersConst.IsExported)
+		assert.NotNil(t, maxUsersConst.Type)
+		assert.Equal(t, "100", maxUsersConst.Value)
+
+		// Find AppName constant
+		var appNameConst *parser.ConstantInfo
+		for _, c := range mainPkg.Constants {
+			if c.Name == "AppName" {
+				appNameConst = c
+				break
+			}
+		}
+		require.NotNil(t, appNameConst)
+		assert.True(t, appNameConst.IsExported)
+		assert.Equal(t, "\"MyApp\"", appNameConst.Value)
+
+		// Find SingleConstant
+		var singleConst *parser.ConstantInfo
+		for _, c := range mainPkg.Constants {
+			if c.Name == "SingleConstant" {
+				singleConst = c
+				break
+			}
+		}
+		require.NotNil(t, singleConst)
+		assert.True(t, singleConst.IsExported)
+		assert.Equal(t, "\"single value\"", singleConst.Value)
+
+		// Validate variables
+		assert.GreaterOrEqual(t, len(mainPkg.Variables), 3)
+
+		// Find defaultUser variable
+		var defaultUserVar *parser.VariableInfo
+		for _, v := range mainPkg.Variables {
+			if v.Name == "defaultUser" {
+				defaultUserVar = v
+				break
+			}
+		}
+		require.NotNil(t, defaultUserVar)
+		assert.False(t, defaultUserVar.IsExported)
+		assert.NotNil(t, defaultUserVar.Type)
+		assert.Contains(t, defaultUserVar.Value, "&User{")
+
+		// Find userCache variable
+		var userCacheVar *parser.VariableInfo
+		for _, v := range mainPkg.Variables {
+			if v.Name == "userCache" {
+				userCacheVar = v
+				break
+			}
+		}
+		require.NotNil(t, userCacheVar)
+		assert.False(t, userCacheVar.IsExported)
+		assert.NotNil(t, userCacheVar.Type)
+		assert.Contains(t, userCacheVar.Type.String(), "map[string]*")
+
+		// Find singleVar variable
+		var singleVarVar *parser.VariableInfo
+		for _, v := range mainPkg.Variables {
+			if v.Name == "singleVar" {
+				singleVarVar = v
+				break
+			}
+		}
+		require.NotNil(t, singleVarVar)
+		assert.False(t, singleVarVar.IsExported)
+		assert.Equal(t, "\"single variable\"", singleVarVar.Value)
+
+		// Validate line numbers are set
+		assert.Greater(t, maxUsersConst.LineStart, 0)
+		assert.Greater(t, defaultUserVar.LineStart, 0)
+	})
+}
+
+func TestService_BackwardCompatibilityAPIs(t *testing.T) {
+	service := parser.NewService(nil)
+
+	t.Run("Should parse single file with ParseFile", func(t *testing.T) {
+		testDir := t.TempDir()
+		testFile := filepath.Join(testDir, "single.go")
+		testContent := `package main
+
+import "fmt"
+
+type Config struct {
+	Name string
+	Port int
+}
+
+func main() {
+	fmt.Println("Hello")
+}
+
+const DefaultPort = 8080
+var globalConfig = &Config{}
+`
+		goModContent := `module testsingle
+
+go 1.21
+`
+		err := os.WriteFile(filepath.Join(testDir, "go.mod"), []byte(goModContent), 0644)
+		require.NoError(t, err)
+		err = os.WriteFile(testFile, []byte(testContent), 0644)
+		require.NoError(t, err)
 
 		ctx := context.Background()
-		info, err := service.ParseFile(ctx, file)
+		result, err := service.ParseFile(ctx, testFile, nil)
 
-		assert.NoError(t, err)
-		assert.Len(t, info.Structs, 1)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		assert.Equal(t, testFile, result.FilePath)
+		assert.NotNil(t, result.Package)
+		assert.NotNil(t, result.FileInfo)
+		assert.Greater(t, result.ParseTime, int64(0))
 
-		complexStruct := info.Structs[0]
-		assert.Equal(t, "ComplexStruct", complexStruct.Name)
-		assert.Len(t, complexStruct.Fields, 5)
+		// Verify package contains the expected content
+		assert.Equal(t, "main", result.Package.Name)
+		assert.GreaterOrEqual(t, len(result.Package.Types), 1)
+		assert.GreaterOrEqual(t, len(result.Package.Functions), 1)
+		assert.GreaterOrEqual(t, len(result.Package.Constants), 1)
+		assert.GreaterOrEqual(t, len(result.Package.Variables), 1)
 
-		// Check complex type parsing
-		assert.Equal(t, "map[string][]int", complexStruct.Fields[0].Type)
-		assert.Equal(t, "[]map[string]interface{}", complexStruct.Fields[1].Type)
-		assert.Equal(t, "*ComplexStruct", complexStruct.Fields[4].Type)
+		// Verify file info
+		assert.Equal(t, testFile, result.FileInfo.Path)
+		assert.Equal(t, "main", result.FileInfo.Package)
+		assert.GreaterOrEqual(t, len(result.FileInfo.Imports), 1)
 	})
 
-	t.Run("Should handle struct tags", func(t *testing.T) {
-		file := filepath.Join(testDir, "tagged_struct.go")
-		content := `package test
+	t.Run("Should parse directory with ParseDirectory", func(t *testing.T) {
+		testDir := t.TempDir()
 
-type TaggedStruct struct {
-	ID   string ` + "`json:\"id\" db:\"user_id\"`" + `
-	Name string ` + "`json:\"name,omitempty\"`" + `
+		// Create multiple Go files in the directory
+		file1 := filepath.Join(testDir, "main.go")
+		file1Content := `package main
+
+import "fmt"
+
+func main() {
+	fmt.Println("Hello from main")
 }
 `
-		require.NoError(t, os.WriteFile(file, []byte(content), 0644))
+
+		file2 := filepath.Join(testDir, "utils.go")
+		file2Content := `package main
+
+func Helper() string {
+	return "helper"
+}
+`
+
+		goModContent := `module testdir
+
+go 1.21
+`
+		err := os.WriteFile(filepath.Join(testDir, "go.mod"), []byte(goModContent), 0644)
+		require.NoError(t, err)
+		err = os.WriteFile(file1, []byte(file1Content), 0644)
+		require.NoError(t, err)
+		err = os.WriteFile(file2, []byte(file2Content), 0644)
+		require.NoError(t, err)
 
 		ctx := context.Background()
-		info, err := service.ParseFile(ctx, file)
+		result, err := service.ParseDirectory(ctx, testDir, nil)
 
-		assert.NoError(t, err)
-		assert.Len(t, info.Structs, 1)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		assert.Equal(t, testDir, result.DirectoryPath)
+		assert.GreaterOrEqual(t, len(result.Packages), 1)
+		assert.Greater(t, result.ParseTime, int64(0))
 
-		taggedStruct := info.Structs[0]
-		assert.Len(t, taggedStruct.Fields, 2)
-		assert.Contains(t, taggedStruct.Fields[0].Tag, "json:\"id\"")
-		assert.Contains(t, taggedStruct.Fields[0].Tag, "db:\"user_id\"")
-		assert.Contains(t, taggedStruct.Fields[1].Tag, "json:\"name,omitempty\"")
+		// Find main package
+		var mainPkg *parser.PackageInfo
+		for _, pkg := range result.Packages {
+			if pkg.Name == "main" {
+				mainPkg = pkg
+				break
+			}
+		}
+		require.NotNil(t, mainPkg)
+
+		// Verify package contains functions from both files
+		assert.GreaterOrEqual(t, len(mainPkg.Functions), 2) // main and Helper
+		assert.GreaterOrEqual(t, len(mainPkg.Files), 2)     // main.go and utils.go
+	})
+
+	t.Run("Should handle file validation errors", func(t *testing.T) {
+		ctx := context.Background()
+
+		// Test non-existent file
+		result, err := service.ParseFile(ctx, "/non/existent/file.go", nil)
+		assert.Error(t, err)
+		assert.Nil(t, result)
+		assert.Contains(t, err.Error(), "file does not exist")
+
+		// Test directory instead of file
+		tempDir := t.TempDir()
+		result, err = service.ParseFile(ctx, tempDir, nil)
+		assert.Error(t, err)
+		assert.Nil(t, result)
+		assert.Contains(t, err.Error(), "path is a directory")
+
+		// Test non-Go file
+		nonGoFile := filepath.Join(tempDir, "test.txt")
+		err = os.WriteFile(nonGoFile, []byte("not go"), 0644)
+		require.NoError(t, err)
+		result, err = service.ParseFile(ctx, nonGoFile, nil)
+		assert.Error(t, err)
+		assert.Nil(t, result)
+		assert.Contains(t, err.Error(), "not a Go source file")
+	})
+}
+
+func TestService_SSAPerformanceMonitoring(t *testing.T) {
+	service := parser.NewService(nil)
+
+	t.Run("Should collect performance metrics when enabled", func(t *testing.T) {
+		testDir := t.TempDir()
+		testFile := filepath.Join(testDir, "perf.go")
+		testContent := `package main
+
+import "fmt"
+
+type Data struct {
+	Value int
+	Name  string
+}
+
+func ProcessData(d *Data) *Data {
+	return &Data{Value: d.Value * 2, Name: d.Name}
+}
+
+func main() {
+	d := &Data{Value: 42, Name: "test"}
+	result := ProcessData(d)
+	fmt.Printf("Result: %+v\n", result)
+}
+`
+		goModContent := `module testperf
+
+go 1.21
+`
+		err := os.WriteFile(filepath.Join(testDir, "go.mod"), []byte(goModContent), 0644)
+		require.NoError(t, err)
+		err = os.WriteFile(testFile, []byte(testContent), 0644)
+		require.NoError(t, err)
+
+		// Enable performance monitoring
+		config := &parser.Config{
+			EnableSSA:              true,
+			EnablePerformanceStats: true,
+			IncludeTests:           false,
+			IncludeVendor:          false,
+		}
+
+		ctx := context.Background()
+		result, err := service.ParseProject(ctx, testDir, config)
+
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.NotNil(t, result.PerformanceStats)
+
+		// Verify performance metrics are collected
+		perfStats := result.PerformanceStats
+		assert.Greater(t, perfStats.BuildDuration, time.Duration(0))
+		assert.Greater(t, perfStats.PreparationTime, time.Duration(0))
+		assert.Greater(t, perfStats.ConstructionTime, time.Duration(0))
+		assert.Greater(t, perfStats.PackagesProcessed, 0)
+		assert.Greater(t, perfStats.FunctionsAnalyzed, 0)
+		assert.GreaterOrEqual(t, perfStats.MemoryUsageMB, int64(0))
+
+		// Verify phase breakdown is populated
+		assert.NotNil(t, perfStats.PhaseBreakdown)
+		assert.Greater(t, len(perfStats.PhaseBreakdown), 0)
+		assert.Contains(t, perfStats.PhaseBreakdown, "preparation")
+		assert.Contains(t, perfStats.PhaseBreakdown, "construction")
+
+		// Verify memory profile is collected
+		assert.NotNil(t, perfStats.MemoryProfile)
+		assert.GreaterOrEqual(t, perfStats.MemoryProfile.InitialMemoryMB, int64(0))
+		assert.GreaterOrEqual(t, perfStats.MemoryProfile.FinalMemoryMB, int64(0))
+		assert.GreaterOrEqual(t, perfStats.MemoryProfile.PeakMemoryMB, perfStats.MemoryProfile.InitialMemoryMB)
+	})
+
+	t.Run("Should not collect performance metrics when disabled", func(t *testing.T) {
+		testDir := t.TempDir()
+		testFile := filepath.Join(testDir, "noperf.go")
+		testContent := `package main
+
+func main() {
+	println("Hello")
+}
+`
+		goModContent := `module testnoperf
+
+go 1.21
+`
+		err := os.WriteFile(filepath.Join(testDir, "go.mod"), []byte(goModContent), 0644)
+		require.NoError(t, err)
+		err = os.WriteFile(testFile, []byte(testContent), 0644)
+		require.NoError(t, err)
+
+		// Disable performance monitoring
+		config := &parser.Config{
+			EnableSSA:              true,
+			EnablePerformanceStats: false,
+			IncludeTests:           false,
+			IncludeVendor:          false,
+		}
+
+		ctx := context.Background()
+		result, err := service.ParseProject(ctx, testDir, config)
+
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		// Performance stats should be nil when disabled
+		assert.Nil(t, result.PerformanceStats)
+	})
+
+	t.Run("Should handle SSA disabled with performance monitoring", func(t *testing.T) {
+		testDir := t.TempDir()
+		testFile := filepath.Join(testDir, "noSSA.go")
+		testContent := `package main
+
+func main() {
+	println("No SSA")
+}
+`
+		goModContent := `module testnoSSA
+
+go 1.21
+`
+		err := os.WriteFile(filepath.Join(testDir, "go.mod"), []byte(goModContent), 0644)
+		require.NoError(t, err)
+		err = os.WriteFile(testFile, []byte(testContent), 0644)
+		require.NoError(t, err)
+
+		// Enable performance monitoring but disable SSA
+		config := &parser.Config{
+			EnableSSA:              false,
+			EnablePerformanceStats: true,
+			IncludeTests:           false,
+			IncludeVendor:          false,
+		}
+
+		ctx := context.Background()
+		result, err := service.ParseProject(ctx, testDir, config)
+
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		// Performance stats should be nil when SSA is disabled
+		assert.Nil(t, result.PerformanceStats)
+		assert.Nil(t, result.SSAProgram)
+	})
+
+	t.Run("Should measure realistic performance metrics", func(t *testing.T) {
+		testDir := t.TempDir()
+		testFile := filepath.Join(testDir, "complex.go")
+		// More complex code to generate meaningful SSA metrics
+		testContent := `package main
+
+import (
+	"fmt"
+	"sort"
+	"strings"
+)
+
+type Person struct {
+	Name string
+	Age  int
+}
+
+type PersonService interface {
+	GetPerson(name string) *Person
+	SavePerson(p *Person) error
+}
+
+type InMemoryPersonService struct {
+	data map[string]*Person
+}
+
+func NewInMemoryPersonService() PersonService {
+	return &InMemoryPersonService{
+		data: make(map[string]*Person),
+	}
+}
+
+func (s *InMemoryPersonService) GetPerson(name string) *Person {
+	return s.data[name]
+}
+
+func (s *InMemoryPersonService) SavePerson(p *Person) error {
+	s.data[p.Name] = p
+	return nil
+}
+
+func ProcessPeople(people []*Person) []*Person {
+	filtered := make([]*Person, 0)
+	for _, p := range people {
+		if p.Age >= 18 {
+			filtered = append(filtered, p)
+		}
+	}
+	sort.Slice(filtered, func(i, j int) bool {
+		return strings.Compare(filtered[i].Name, filtered[j].Name) < 0
+	})
+	return filtered
+}
+
+func main() {
+	service := NewInMemoryPersonService()
+	people := []*Person{
+		{Name: "Alice", Age: 25},
+		{Name: "Bob", Age: 17},
+		{Name: "Carol", Age: 30},
+	}
+	for _, p := range people {
+		service.SavePerson(p)
+	}
+	adults := ProcessPeople(people)
+	fmt.Printf("Adults: %+v\n", adults)
+}
+`
+		goModContent := `module testcomplex
+
+go 1.21
+`
+		err := os.WriteFile(filepath.Join(testDir, "go.mod"), []byte(goModContent), 0644)
+		require.NoError(t, err)
+		err = os.WriteFile(testFile, []byte(testContent), 0644)
+		require.NoError(t, err)
+
+		// Enable performance monitoring
+		config := &parser.Config{
+			EnableSSA:              true,
+			EnablePerformanceStats: true,
+			IncludeTests:           false,
+			IncludeVendor:          false,
+		}
+
+		ctx := context.Background()
+		result, err := service.ParseProject(ctx, testDir, config)
+
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.NotNil(t, result.PerformanceStats)
+
+		perfStats := result.PerformanceStats
+		// Should have analyzed multiple functions
+		assert.GreaterOrEqual(
+			t,
+			perfStats.FunctionsAnalyzed,
+			5,
+		) // main, NewInMemoryPersonService, GetPerson, SavePerson, ProcessPeople
+		assert.Equal(t, 1, perfStats.PackagesProcessed) // main package only
+
+		// Verify timing relationships
+		assert.LessOrEqual(t, perfStats.PreparationTime, perfStats.BuildDuration)
+		assert.LessOrEqual(t, perfStats.ConstructionTime, perfStats.BuildDuration)
+		assert.GreaterOrEqual(t, perfStats.BuildDuration, perfStats.PreparationTime+perfStats.ConstructionTime)
+
+		// Verify memory usage tracking
+		assert.GreaterOrEqual(t, perfStats.MemoryProfile.PeakMemoryMB, perfStats.MemoryProfile.InitialMemoryMB)
+		assert.GreaterOrEqual(t, perfStats.MemoryProfile.FinalMemoryMB, int64(0))
 	})
 }

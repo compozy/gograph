@@ -12,6 +12,7 @@ import (
 
 	"github.com/compozy/gograph/engine/core"
 	"github.com/compozy/gograph/engine/graph"
+	"github.com/compozy/gograph/engine/parser"
 	"github.com/compozy/gograph/engine/query"
 	"github.com/compozy/gograph/pkg/config"
 	"github.com/compozy/gograph/pkg/logger"
@@ -58,27 +59,37 @@ func (s *Server) HandleAnalyzeProjectInternal(ctx context.Context, input map[str
 		return nil, fmt.Errorf("project_path is required")
 	}
 
-	// Get project ID using helper
+	// Get project ID and validate
 	projectID, err := s.getProjectID(input)
 	if err != nil {
 		return nil, err
 	}
 
-	// Validate path is allowed
 	if !s.IsPathAllowed(projectPath) {
 		return nil, fmt.Errorf("path %s is not allowed by security policy", projectPath)
 	}
 
 	logger.Info("analyzing project", "path", projectPath, "project_id", projectID)
 
-	// Create project
+	// Perform analysis
+	analysisData, err := s.performAnalysis(ctx, projectPath, projectID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Build response
+	return s.buildAnalysisResponse(projectID, analysisData), nil
+}
+
+// performAnalysis executes the full analysis pipeline
+func (s *Server) performAnalysis(ctx context.Context, projectPath, projectID string) (*analysisData, error) {
+	// Create and initialize project
 	project := &core.Project{
 		ID:       core.ID(projectID),
 		Name:     projectID,
 		RootPath: projectPath,
 	}
 
-	// Initialize project in graph
 	if err := s.serviceAdapter.InitializeProject(ctx, project); err != nil {
 		return nil, fmt.Errorf("failed to initialize project: %w", err)
 	}
@@ -90,18 +101,17 @@ func (s *Server) HandleAnalyzeProjectInternal(ctx context.Context, input map[str
 	}
 
 	// Analyze project
-	analysisReport, err := s.serviceAdapter.AnalyzeProject(ctx, project.ID, parseResult.Files)
+	analysisReport, err := s.serviceAdapter.AnalyzeProject(ctx, project.ID, parseResult)
 	if err != nil {
 		return nil, fmt.Errorf("failed to analyze project: %w", err)
 	}
 
-	// Build proper analysis result with relationships using graph builder
+	// Build and import analysis result
 	analysisResult, err := s.serviceAdapter.BuildAnalysisResult(ctx, project.ID, parseResult, analysisReport)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build analysis result: %w", err)
 	}
 
-	// Import to graph
 	projectGraph, err := s.serviceAdapter.ImportAnalysisResult(ctx, analysisResult)
 	if err != nil {
 		return nil, fmt.Errorf("failed to import project: %w", err)
@@ -113,15 +123,37 @@ func (s *Server) HandleAnalyzeProjectInternal(ctx context.Context, input map[str
 		return nil, fmt.Errorf("failed to get statistics: %w", err)
 	}
 
-	result := map[string]any{
-		"project_id":     projectID,
-		"nodes_created":  len(projectGraph.Nodes),
-		"relationships":  len(projectGraph.Relationships),
-		"files_analyzed": len(parseResult.Files),
-		"statistics":     ConvertStatistics(stats),
+	return &analysisData{
+		parseResult:  parseResult,
+		projectGraph: projectGraph,
+		stats:        stats,
+	}, nil
+}
+
+// analysisData holds the results of project analysis
+type analysisData struct {
+	parseResult  *parser.ParseResult
+	projectGraph *graph.ProjectGraph
+	stats        *graph.ProjectStatistics
+}
+
+// buildAnalysisResponse creates the tool response from analysis data
+func (s *Server) buildAnalysisResponse(projectID string, data *analysisData) *ToolResponse {
+	// Count total files from packages
+	totalFiles := 0
+	for _, pkg := range data.parseResult.Packages {
+		totalFiles += len(pkg.Files)
 	}
 
-	response := &ToolResponse{
+	result := map[string]any{
+		"project_id":     projectID,
+		"nodes_created":  len(data.projectGraph.Nodes),
+		"relationships":  len(data.projectGraph.Relationships),
+		"files_analyzed": totalFiles,
+		"statistics":     ConvertStatistics(data.stats),
+	}
+
+	return &ToolResponse{
 		Content: []any{
 			map[string]any{
 				"type": "text",
@@ -136,8 +168,6 @@ func (s *Server) HandleAnalyzeProjectInternal(ctx context.Context, input map[str
 			},
 		},
 	}
-
-	return response, nil
 }
 
 // HandleExecuteCypherInternal executes a custom Cypher query
@@ -815,7 +845,14 @@ func (s *Server) HandleListPackagesInternal(ctx context.Context, input map[strin
 	params := map[string]any{"project_id": projectID}
 
 	if pattern != "" {
-		query = strings.Replace(query, "ORDER BY p.name", "WHERE p.name CONTAINS $pattern ORDER BY p.name", 1)
+		query = `
+		MATCH (p:Package {project_id: $project_id})
+		WHERE p.name CONTAINS $pattern
+		OPTIONAL MATCH (p)<-[:BELONGS_TO]-(f:File)
+		OPTIONAL MATCH (p)<-[:BELONGS_TO]-(fn:Function)
+		RETURN p.name as name, p.path as path, count(DISTINCT f) as file_count, count(DISTINCT fn) as function_count
+		ORDER BY p.name
+	`
 		params["pattern"] = pattern
 	}
 
@@ -874,10 +911,10 @@ func (s *Server) HandleGetPackageStructureInternal(ctx context.Context, input ma
 	// Get package structure
 	query := `
 		MATCH (pkg:Package {project_id: $project_id, name: $package})
-		OPTIONAL MATCH (pkg)<-[:BELONGS_TO]-(f:File)
-		OPTIONAL MATCH (pkg)<-[:BELONGS_TO]-(fn:Function)
-		OPTIONAL MATCH (pkg)<-[:BELONGS_TO]-(s:Struct)
-		OPTIONAL MATCH (pkg)<-[:BELONGS_TO]-(i:Interface)
+		OPTIONAL MATCH (pkg)-[:CONTAINS]->(f:File)
+		OPTIONAL MATCH (f)-[:DEFINES]->(fn:Function)
+		OPTIONAL MATCH (f)-[:DEFINES]->(s:Struct)
+		OPTIONAL MATCH (f)-[:DEFINES]->(i:Interface)
 		RETURN pkg,
 		       collect(DISTINCT {name: f.name, path: f.path}) as files,
 		       collect(DISTINCT {name: fn.name, signature: fn.signature, is_exported: fn.is_exported}) as functions,
@@ -958,18 +995,10 @@ func (s *Server) HandleGetPackageStructureInternal(ctx context.Context, input ma
 
 // handleNaturalLanguageQuery converts natural language to Cypher and executes
 func (s *Server) HandleNaturalLanguageQueryInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
-	// Get project ID using helper
-	projectID, err := s.getProjectID(input)
+	// Extract and validate inputs
+	projectID, query, context, err := s.extractNLQueryInputs(input)
 	if err != nil {
 		return nil, err
-	}
-	query, ok := input["query"].(string)
-	if !ok {
-		return nil, fmt.Errorf("query is required")
-	}
-	context := ""
-	if c, ok := input["context"].(string); ok {
-		context = c
 	}
 
 	logger.Info("natural language query",
@@ -977,37 +1006,169 @@ func (s *Server) HandleNaturalLanguageQueryInternal(ctx context.Context, input m
 		"query", query,
 		"context", context)
 
-	// Use LLM service to translate natural language to Cypher
-	var cypherQuery string
-	var params map[string]any
+	// Get schema information for better translation
+	schema := s.getSchemaForNLQuery(ctx, projectID)
 
-	if s.llmService != nil {
-		// Get schema for the project
-		schema, schemaErr := s.llmService.GetSchema(ctx, projectID)
-		if schemaErr != nil {
-			logger.Warn("Failed to get schema, using fallback", "error", schemaErr)
-			cypherQuery, params = GenerateFallbackCypher(query, projectID)
-		} else {
-			result, err := s.llmService.Translate(ctx, query, schema)
-			if err != nil {
-				logger.Warn("Failed to translate query with LLM, using fallback", "error", err)
-				cypherQuery, params = GenerateFallbackCypher(query, projectID)
-			} else {
-				cypherQuery = result.Query
-				// LLM-generated queries should still use project_id parameter
-				params = map[string]any{"project_id": projectID}
-			}
-		}
-	} else {
-		cypherQuery, params = GenerateFallbackCypher(query, projectID)
-	}
+	// Translate natural language to Cypher
+	cypherQuery, params, translationError := s.translateNLToCypher(ctx, query, projectID, schema)
 
-	// Execute the generated Cypher query
+	// Validate the generated query
+	isValid, validationSuggestions := s.validateCypherQuery(ctx, cypherQuery, projectID)
+
+	// Execute the query
 	results, err := s.serviceAdapter.ExecuteQuery(ctx, cypherQuery, params)
 	if err != nil {
-		return nil, fmt.Errorf("failed to execute generated query: %w", err)
+		return s.createNLQueryErrorResponse(err, cypherQuery, projectID, isValid,
+			validationSuggestions, translationError, schema)
 	}
 
+	return s.createNLQuerySuccessResponse(query, cypherQuery, context, results, projectID)
+}
+
+// extractNLQueryInputs extracts and validates input parameters
+func (s *Server) extractNLQueryInputs(input map[string]any) (string, string, string, error) {
+	projectID, err := s.getProjectID(input)
+	if err != nil {
+		return "", "", "", err
+	}
+
+	query, ok := input["query"].(string)
+	if !ok {
+		return "", "", "", fmt.Errorf("query is required")
+	}
+
+	context := ""
+	if c, ok := input["context"].(string); ok {
+		context = c
+	}
+
+	return projectID, query, context, nil
+}
+
+// getSchemaForNLQuery retrieves database schema for NL query translation
+func (s *Server) getSchemaForNLQuery(ctx context.Context, projectID string) map[string]any {
+	schemaInfo, err := s.HandleGetDatabaseSchemaInternal(ctx, map[string]any{
+		"project_id":       projectID,
+		"include_examples": true,
+	})
+
+	if err != nil || len(schemaInfo.Content) < 2 {
+		return nil
+	}
+
+	resource, ok := schemaInfo.Content[1].(map[string]any)
+	if !ok {
+		return nil
+	}
+
+	resourceData, ok := resource["resource"].(map[string]any)
+	if !ok {
+		return nil
+	}
+
+	data, ok := resourceData["data"].(map[string]any)
+	if !ok {
+		return nil
+	}
+
+	return data
+}
+
+// translateNLToCypher translates natural language to Cypher query
+func (s *Server) translateNLToCypher(ctx context.Context, query, projectID string,
+	schema map[string]any) (string, map[string]any, error) {
+	if s.llmService != nil && schema != nil {
+		schemaString := s.formatSchemaForLLM(schema)
+		result, err := s.llmService.Translate(ctx, query, schemaString)
+		if err != nil {
+			logger.Warn("Failed to translate query with LLM, using fallback", "error", err)
+			cypherQuery, params := GenerateFallbackCypher(query, projectID)
+			return cypherQuery, params, err
+		}
+		return result.Query, map[string]any{"project_id": projectID}, nil
+	}
+
+	cypherQuery, params := GenerateFallbackCypher(query, projectID)
+	return cypherQuery, params, nil
+}
+
+// validateCypherQuery validates a Cypher query
+func (s *Server) validateCypherQuery(ctx context.Context, cypherQuery, projectID string) (bool, []string) {
+	validation, err := s.HandleValidateCypherQueryInternal(ctx, map[string]any{
+		"query":      cypherQuery,
+		"project_id": projectID,
+	})
+
+	if err != nil || len(validation.Content) < 2 {
+		return false, nil
+	}
+
+	resource, ok := validation.Content[1].(map[string]any)
+	if !ok {
+		return false, nil
+	}
+
+	resourceData, ok := resource["resource"].(map[string]any)
+	if !ok {
+		return false, nil
+	}
+
+	data, ok := resourceData["data"].(map[string]any)
+	if !ok {
+		return false, nil
+	}
+
+	var isValid bool
+	if valid, ok := data["is_valid"].(bool); ok {
+		isValid = valid
+	}
+
+	var suggestions []string
+	if sugg, ok := data["suggestions"].([]string); ok {
+		suggestions = sugg
+	}
+
+	return isValid, suggestions
+}
+
+// createNLQueryErrorResponse creates error response for NL query
+func (s *Server) createNLQueryErrorResponse(err error, cypherQuery, projectID string,
+	isValid bool, suggestions []string, translationError error, schema map[string]any) (*ToolResponse, error) {
+	errorInfo := map[string]any{
+		"original_error":       err.Error(),
+		"generated_query":      cypherQuery,
+		"validation_performed": true,
+		"query_was_valid":      isValid,
+		"suggestions":          suggestions,
+		"translation_error":    translationError,
+		"schema_available":     schema != nil,
+	}
+
+	if schema != nil {
+		errorInfo["available_node_types"] = schema["node_types"]
+		errorInfo["available_relationships"] = schema["relationship_types"]
+	}
+
+	return &ToolResponse{
+		Content: []any{
+			map[string]any{
+				"type": "text",
+				"text": fmt.Sprintf("Query execution failed for project %s", projectID),
+			},
+			map[string]any{
+				"type": "resource",
+				"resource": map[string]any{
+					"uri":  fmt.Sprintf("/projects/%s/nl-query-error", projectID),
+					"data": errorInfo,
+				},
+			},
+		},
+	}, nil
+}
+
+// createNLQuerySuccessResponse creates success response for NL query
+func (s *Server) createNLQuerySuccessResponse(query, cypherQuery, context string,
+	results []map[string]any, projectID string) (*ToolResponse, error) {
 	result := map[string]any{
 		"natural_query": query,
 		"cypher_query":  cypherQuery,
@@ -2612,4 +2773,344 @@ func (s *Server) HandleValidateProjectInternal(ctx context.Context, input map[st
 			},
 		},
 	}, nil
+}
+
+// HandleGetDatabaseSchemaInternal provides Neo4j schema information for LLM query assistance
+func (s *Server) HandleGetDatabaseSchemaInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
+	projectID, err := s.getProjectID(input)
+	if err != nil {
+		return nil, err
+	}
+	includeExamples := false
+	if ie, ok := input["include_examples"].(bool); ok {
+		includeExamples = ie
+	}
+	filterType := ""
+	if ft, ok := input["filter_type"].(string); ok {
+		filterType = ft
+	}
+
+	logger.Info("getting database schema",
+		"project_id", projectID,
+		"include_examples", includeExamples,
+		"filter_type", filterType)
+
+	// Get node types and their properties
+	nodeTypesQuery := `
+		MATCH (n {project_id: $project_id})
+		WITH labels(n) as labels, keys(n) as props
+		UNWIND labels as label
+		RETURN label, collect(DISTINCT props) as property_sets
+		ORDER BY label
+	`
+	nodeResults, err := s.serviceAdapter.ExecuteQuery(ctx, nodeTypesQuery, map[string]any{"project_id": projectID})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get node types: %w", err)
+	}
+
+	// Get relationship types
+	relationshipTypesQuery := `
+		MATCH (a {project_id: $project_id})-[r]->(b {project_id: $project_id})
+		RETURN type(r) as relationship_type, count(r) as count, 
+		       collect(DISTINCT labels(a)) as source_labels,
+		       collect(DISTINCT labels(b)) as target_labels
+		ORDER BY relationship_type
+	`
+	relResults, err := s.serviceAdapter.ExecuteQuery(
+		ctx,
+		relationshipTypesQuery,
+		map[string]any{"project_id": projectID},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get relationship types: %w", err)
+	}
+
+	// Build schema information
+	schema := map[string]any{
+		"node_types":         s.processNodeTypes(nodeResults, filterType),
+		"relationship_types": s.processRelationshipTypes(relResults, filterType),
+		"project_id":         projectID,
+	}
+
+	if includeExamples {
+		schema["examples"] = s.generateQueryExamples(projectID)
+	}
+
+	schema["common_patterns"] = s.getCommonQueryPatterns()
+
+	return &ToolResponse{
+		Content: []any{
+			map[string]any{
+				"type": "text",
+				"text": fmt.Sprintf("Database schema for project %s", projectID),
+			},
+			map[string]any{
+				"type": "resource",
+				"resource": map[string]any{
+					"uri":  fmt.Sprintf("/projects/%s/schema", projectID),
+					"data": schema,
+				},
+			},
+		},
+	}, nil
+}
+
+// processNodeTypes processes node type results for schema
+func (s *Server) processNodeTypes(results []map[string]any, filterType string) []map[string]any {
+	var nodeTypes []map[string]any
+	propertyMap := make(map[string]map[string]bool)
+
+	for _, result := range results {
+		label, ok := result["label"].(string)
+		if !ok {
+			continue
+		}
+		if filterType != "" && !strings.Contains(strings.ToLower(label), strings.ToLower(filterType)) {
+			continue
+		}
+
+		if propertyMap[label] == nil {
+			propertyMap[label] = make(map[string]bool)
+		}
+
+		// Extract properties from property sets
+		if propSets, ok := result["property_sets"].([]any); ok {
+			for _, propSet := range propSets {
+				if props, ok := propSet.([]any); ok {
+					for _, prop := range props {
+						if propStr, ok := prop.(string); ok {
+							propertyMap[label][propStr] = true
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Convert to final format
+	for label, props := range propertyMap {
+		var properties []string
+		for prop := range props {
+			properties = append(properties, prop)
+		}
+		nodeTypes = append(nodeTypes, map[string]any{
+			"label":      label,
+			"properties": properties,
+		})
+	}
+
+	return nodeTypes
+}
+
+// processRelationshipTypes processes relationship type results for schema
+func (s *Server) processRelationshipTypes(results []map[string]any, filterType string) []map[string]any {
+	var relationshipTypes []map[string]any
+
+	for _, result := range results {
+		relType, ok := result["relationship_type"].(string)
+		if !ok {
+			continue
+		}
+		if filterType != "" && !strings.Contains(strings.ToLower(relType), strings.ToLower(filterType)) {
+			continue
+		}
+
+		relationshipTypes = append(relationshipTypes, map[string]any{
+			"type":          relType,
+			"count":         result["count"],
+			"source_labels": result["source_labels"],
+			"target_labels": result["target_labels"],
+		})
+	}
+
+	return relationshipTypes
+}
+
+// generateQueryExamples generates example queries for common use cases
+func (s *Server) generateQueryExamples(projectID string) map[string]any {
+	return map[string]any{
+		"find_functions": map[string]any{
+			"description": "Find all functions in a package",
+			"query": "MATCH (f:Function {project_id: $project_id}) " +
+				"WHERE f.package CONTAINS 'parser' " +
+				"RETURN f.name, f.package, f.signature LIMIT 10",
+			"parameters": map[string]string{"project_id": projectID},
+		},
+		"function_calls": map[string]any{
+			"description": "Find functions that call a specific function",
+			"query": "MATCH (caller:Function)-[:CALLS]->(callee:Function {project_id: $project_id}) " +
+				"WHERE callee.name = 'Execute' " +
+				"RETURN caller.name, caller.package",
+			"parameters": map[string]string{"project_id": projectID},
+		},
+		"package_dependencies": map[string]any{
+			"description": "Find package dependencies",
+			"query": "MATCH (p:Package {project_id: $project_id})-[:IMPORTS]->(dep:Package) " +
+				"RETURN p.name, collect(dep.name) as dependencies",
+			"parameters": map[string]string{"project_id": projectID},
+		},
+		"interface_implementations": map[string]any{
+			"description": "Find implementations of an interface",
+			"query": "MATCH (impl:Struct)-[:IMPLEMENTS]->(iface:Interface {project_id: $project_id}) " +
+				"WHERE iface.name = 'Parser' " +
+				"RETURN impl.name, impl.package",
+			"parameters": map[string]string{"project_id": projectID},
+		},
+	}
+}
+
+// getCommonQueryPatterns provides common Cypher patterns for LLMs
+func (s *Server) getCommonQueryPatterns() map[string]any {
+	return map[string]any{
+		"node_matching": map[string]any{
+			"basic":      "MATCH (n:NodeType {project_id: $project_id}) RETURN n",
+			"with_props": "MATCH (n:NodeType {project_id: $project_id, name: 'specific_name'}) RETURN n",
+			"filtering":  "MATCH (n:NodeType {project_id: $project_id}) WHERE n.property CONTAINS 'substring' RETURN n",
+		},
+		"relationship_patterns": map[string]any{
+			"basic":       "MATCH (a)-[:RELATIONSHIP_TYPE]->(b) RETURN a, b",
+			"with_filter": "MATCH (a:NodeA {project_id: $project_id})-[:REL]->(b:NodeB) WHERE a.name = 'value' RETURN a, b",
+			"counting":    "MATCH (a)-[:REL]->(b) RETURN a.name, count(b) as rel_count ORDER BY rel_count DESC",
+		},
+		"common_mistakes": []string{
+			"Always include project_id filter: {project_id: $project_id}",
+			"Use CONTAINS for substring matching, not LIKE",
+			"Remember to use DISTINCT when counting relationships",
+			"Use LIMIT to prevent large result sets",
+			"Property names are case-sensitive",
+		},
+	}
+}
+
+// HandleValidateCypherQueryInternal validates Cypher query syntax and suggests corrections
+func (s *Server) HandleValidateCypherQueryInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
+	query, ok := input["query"].(string)
+	if !ok {
+		return nil, fmt.Errorf("query is required")
+	}
+	projectID, err := s.getProjectID(input)
+	if err != nil {
+		return nil, err
+	}
+
+	logger.Info("validating cypher query", "project_id", projectID, "query_length", len(query))
+
+	// Try to execute the query with EXPLAIN to check syntax
+	explainQuery := "EXPLAIN " + query
+	_, explainErr := s.serviceAdapter.ExecuteQuery(ctx, explainQuery, map[string]any{"project_id": projectID})
+
+	validation := map[string]any{
+		"query":      query,
+		"project_id": projectID,
+		"is_valid":   explainErr == nil,
+	}
+
+	if explainErr != nil {
+		validation["error"] = explainErr.Error()
+		validation["suggestions"] = s.analyzeCypherError(query, explainErr.Error())
+	} else {
+		validation["message"] = "Query syntax is valid"
+	}
+
+	return &ToolResponse{
+		Content: []any{
+			map[string]any{
+				"type": "text",
+				"text": fmt.Sprintf("Cypher query validation for project %s", projectID),
+			},
+			map[string]any{
+				"type": "resource",
+				"resource": map[string]any{
+					"uri":  fmt.Sprintf("/projects/%s/query-validation", projectID),
+					"data": validation,
+				},
+			},
+		},
+	}, nil
+}
+
+// analyzeCypherError analyzes common Cypher errors and provides suggestions
+func (s *Server) analyzeCypherError(query, errorMsg string) []string {
+	var suggestions []string
+	errorLower := strings.ToLower(errorMsg)
+	queryLower := strings.ToLower(query)
+
+	if strings.Contains(errorLower, "invalid input") {
+		suggestions = append(suggestions, "Check for syntax errors: missing parentheses, brackets, or commas")
+	}
+
+	if strings.Contains(errorLower, "undefined property") {
+		suggestions = append(suggestions, "Verify property names are correct and case-sensitive")
+	}
+
+	if strings.Contains(errorLower, "undefined variable") {
+		suggestions = append(suggestions, "Ensure all variables are properly defined in MATCH clauses")
+	}
+
+	if !strings.Contains(queryLower, "project_id") {
+		suggestions = append(suggestions, "Add project_id filter: {project_id: $project_id}")
+	}
+
+	if strings.Contains(queryLower, "like") {
+		suggestions = append(suggestions, "Use CONTAINS instead of LIKE for substring matching")
+	}
+
+	if strings.Contains(errorLower, "expected") {
+		suggestions = append(suggestions, "Check clause order: MATCH, WHERE, RETURN, ORDER BY, LIMIT")
+	}
+
+	if len(suggestions) == 0 {
+		suggestions = append(suggestions, "Check the query syntax and ensure all node/relationship types exist")
+	}
+
+	return suggestions
+}
+
+// formatSchemaForLLM converts schema map to string format for LLM service
+func (s *Server) formatSchemaForLLM(schema map[string]any) string {
+	var schemaStr strings.Builder
+
+	schemaStr.WriteString("Neo4j Database Schema:\n\n")
+
+	// Format node types
+	if nodeTypes, ok := schema["node_types"].([]map[string]any); ok {
+		schemaStr.WriteString("Node Types:\n")
+		for _, nodeType := range nodeTypes {
+			if label, ok := nodeType["label"].(string); ok {
+				schemaStr.WriteString(fmt.Sprintf("- %s", label))
+				if properties, ok := nodeType["properties"].([]string); ok && len(properties) > 0 {
+					schemaStr.WriteString(fmt.Sprintf(" (properties: %s)", strings.Join(properties, ", ")))
+				}
+				schemaStr.WriteString("\n")
+			}
+		}
+		schemaStr.WriteString("\n")
+	}
+
+	// Format relationship types
+	if relTypes, ok := schema["relationship_types"].([]map[string]any); ok {
+		schemaStr.WriteString("Relationship Types:\n")
+		for _, relType := range relTypes {
+			if typeStr, ok := relType["type"].(string); ok {
+				schemaStr.WriteString(fmt.Sprintf("- %s", typeStr))
+				if count, ok := relType["count"]; ok {
+					schemaStr.WriteString(fmt.Sprintf(" (%v occurrences)", count))
+				}
+				schemaStr.WriteString("\n")
+			}
+		}
+		schemaStr.WriteString("\n")
+	}
+
+	// Add common patterns
+	if patterns, ok := schema["common_patterns"].(map[string]any); ok {
+		schemaStr.WriteString("Common Query Patterns:\n")
+		if mistakes, ok := patterns["common_mistakes"].([]string); ok {
+			for _, mistake := range mistakes {
+				schemaStr.WriteString(fmt.Sprintf("- %s\n", mistake))
+			}
+		}
+	}
+
+	return schemaStr.String()
 }

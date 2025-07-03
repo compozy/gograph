@@ -3,6 +3,7 @@ package graph
 import (
 	"context"
 	"fmt"
+	"go/types"
 	"path/filepath"
 	"time"
 
@@ -76,18 +77,20 @@ func (b *builder) BuildFromAnalysis(
 ) (*core.AnalysisResult, error) {
 	startTime := time.Now()
 
-	// Pre-allocate with estimated capacity for better memory efficiency
-	estimatedNodes := len(parseResult.Files) * 10 // Conservative estimate: ~10 nodes per file
-	if len(parseResult.Files) > 0 {
-		// Estimate based on average nodes per file (funcs, structs, constants, etc.)
-		avgNodesPerFile := 10 // Conservative estimate
-		estimatedNodes = len(parseResult.Files) * (1 + avgNodesPerFile)
+	// Count total files
+	totalFiles := 0
+	for _, pkg := range parseResult.Packages {
+		totalFiles += len(pkg.Files)
 	}
+
+	// Pre-allocate with estimated capacity for better memory efficiency
+	estimatedNodes := totalFiles * 10 // Conservative estimate: ~10 nodes per file
 
 	// Log processing start
 	logger.Info("building graph from analysis",
 		"project_id", projectID,
-		"files", len(parseResult.Files),
+		"packages", len(parseResult.Packages),
+		"files", totalFiles,
 		"estimated_nodes", estimatedNodes)
 
 	// Start with basic graph structure from parser
@@ -100,27 +103,35 @@ func (b *builder) BuildFromAnalysis(
 	b.addAnalyzerRelationships(result, analysis)
 
 	// Update totals with analysis info
-	result.TotalFiles = analysis.Metrics.TotalFiles
+	if analysis.Metrics != nil {
+		result.TotalFiles = analysis.Metrics.TotalFiles
+	}
 
 	// Log completion statistics
 	logger.Info("graph building completed",
 		"duration", time.Since(startTime),
 		"nodes", len(result.Nodes),
 		"relationships", len(result.Relationships),
-		"nodes_per_file", float64(len(result.Nodes))/float64(len(parseResult.Files)))
+		"nodes_per_file", float64(len(result.Nodes))/float64(totalFiles))
 
 	return result, nil
 }
 
 // BuildFromParseResult creates basic graph structure from parser results only
 func (b *builder) BuildFromParseResult(
-	ctx context.Context,
+	_ context.Context,
 	projectID core.ID,
 	parseResult *parser.ParseResult,
 ) (*core.AnalysisResult, error) {
+	// Count total files
+	totalFiles := 0
+	for _, pkg := range parseResult.Packages {
+		totalFiles += len(pkg.Files)
+	}
+
 	// Pre-allocate capacity for better performance with large codebases
-	estimatedNodes := len(parseResult.Files) * 10 // Rough estimate
-	estimatedRels := estimatedNodes * 3           // Rough estimate
+	estimatedNodes := totalFiles * 10 // Rough estimate
+	estimatedRels := estimatedNodes * 3
 
 	result := &core.AnalysisResult{
 		ProjectID:     projectID,
@@ -129,53 +140,38 @@ func (b *builder) BuildFromParseResult(
 		AnalyzedAt:    time.Now(),
 	}
 
-	// Process packages and files
-	packageNodes := make(map[string]core.ID)
+	// Process packages
+	packageNodeMap := make(map[string]core.ID)
+	functionNodeMap := make(map[string]core.ID) // For linking calls
+	typeNodeMap := make(map[string]core.ID)     // For linking implementations
 
-	// Check if we should use chunked processing for large codebases
-	if len(parseResult.Files) > b.config.ChunkSize*2 {
-		logger.Info("using chunked processing for large codebase",
-			"total_files", len(parseResult.Files),
-			"chunk_size", b.config.ChunkSize)
+	for _, pkg := range parseResult.Packages {
+		pkgID := b.createPackageNode(result, pkg)
+		packageNodeMap[pkg.Path] = pkgID
 
-		// Process files in chunks to avoid memory issues
-		for i := 0; i < len(parseResult.Files); i += b.config.ChunkSize {
-			end := i + b.config.ChunkSize
-			if end > len(parseResult.Files) {
-				end = len(parseResult.Files)
-			}
-
-			chunk := parseResult.Files[i:end]
-			logger.Debug("processing file chunk",
-				"chunk_start", i,
-				"chunk_end", end,
-				"chunk_size", len(chunk))
-
-			for _, file := range chunk {
-				b.processFile(ctx, result, file, packageNodes)
-			}
-
-			// Allow GC to clean up memory between chunks
-			if i+b.config.ChunkSize < len(parseResult.Files) {
-				time.Sleep(10 * time.Millisecond)
+		// Process files in the package
+		for _, file := range pkg.Files {
+			if b.config.CreateFileNodes {
+				fileID := b.createFileNode(result, file, pkgID)
+				b.processFileContents(result, pkg, file, fileID, functionNodeMap, typeNodeMap)
 			}
 		}
-	} else {
-		// Process all files at once for smaller codebases
-		for _, file := range parseResult.Files {
-			b.processFile(ctx, result, file, packageNodes)
-		}
+
+		// Process package-level types and functions
+		b.processPackageTypes(result, pkg, pkgID, typeNodeMap)
+		b.processPackageFunctions(result, pkg, pkgID, functionNodeMap)
 	}
 
 	// Update result totals
-	result.TotalPackages = len(packageNodes)
+	result.TotalPackages = len(packageNodeMap)
 	result.TotalFunctions = 0
 	result.TotalStructs = 0
+	result.TotalFiles = totalFiles
 
 	// Count types
 	for _, node := range result.Nodes {
 		switch node.Type {
-		case core.NodeTypeFunction:
+		case core.NodeTypeFunction, core.NodeTypeMethod:
 			result.TotalFunctions++
 		case core.NodeTypeStruct:
 			result.TotalStructs++
@@ -185,105 +181,81 @@ func (b *builder) BuildFromParseResult(
 	return result, nil
 }
 
-// processFile processes a single file and adds nodes/relationships
-func (b *builder) processFile(
-	ctx context.Context,
-	result *core.AnalysisResult,
-	file *parser.FileInfo,
-	packageNodes map[string]core.ID,
-) {
-	// Create package node if not exists
-	pkgID := b.createPackageNode(ctx, result, file, packageNodes)
-
-	// Create file node
-	if b.config.CreateFileNodes {
-		fileID := core.NewID()
-		fileNode := core.Node{
-			ID:   fileID,
-			Type: core.NodeTypeFile,
-			Name: filepath.Base(file.Path),
-			Properties: map[string]any{
-				"path":       file.Path,
-				"package":    file.Package,
-				"project_id": result.ProjectID.String(),
-			},
-			CreatedAt: time.Now(),
-		}
-		result.Nodes = append(result.Nodes, fileNode)
-
-		// Create package->file relationship
-		result.Relationships = append(result.Relationships, core.Relationship{
-			ID:         core.NewID(),
-			Type:       core.RelationContains,
-			FromNodeID: pkgID,
-			ToNodeID:   fileID,
-			Properties: map[string]any{
-				"project_id": result.ProjectID.String(),
-			},
-			CreatedAt: time.Now(),
-		})
-
-		// Process file contents
-		b.processFileContents(result, file, fileID)
-	}
-}
-
-// createPackageNode creates a package node if it doesn't exist
-func (b *builder) createPackageNode(
-	_ context.Context,
-	result *core.AnalysisResult,
-	file *parser.FileInfo,
-	packageNodes map[string]core.ID,
-) core.ID {
-	// Check if package node already exists
-	if pkgID, exists := packageNodes[file.Package]; exists {
-		return pkgID
-	}
-
-	// Create new package node
+// createPackageNode creates a package node
+func (b *builder) createPackageNode(result *core.AnalysisResult, pkg *parser.PackageInfo) core.ID {
 	pkgID := core.NewID()
 	pkgNode := core.Node{
 		ID:   pkgID,
 		Type: core.NodeTypePackage,
-		Name: file.Package,
-		Path: file.Package,
+		Name: pkg.Name,
+		Path: pkg.Path,
 		Properties: map[string]any{
 			"project_id":  result.ProjectID.String(),
 			"analyzed_at": result.AnalyzedAt,
+			"import_path": pkg.Path,
 		},
 		CreatedAt: time.Now(),
 	}
 	result.Nodes = append(result.Nodes, pkgNode)
-
-	// Cache the package node ID
-	packageNodes[file.Package] = pkgID
-
 	return pkgID
+}
+
+// createFileNode creates a file node
+func (b *builder) createFileNode(result *core.AnalysisResult, file *parser.FileInfo, pkgID core.ID) core.ID {
+	fileID := core.NewID()
+	fileNode := core.Node{
+		ID:   fileID,
+		Type: core.NodeTypeFile,
+		Name: filepath.Base(file.Path),
+		Properties: map[string]any{
+			"path":       file.Path,
+			"package":    file.Package,
+			"project_id": result.ProjectID.String(),
+		},
+		CreatedAt: time.Now(),
+	}
+	result.Nodes = append(result.Nodes, fileNode)
+
+	// Create package->file relationship
+	result.Relationships = append(result.Relationships, core.Relationship{
+		ID:         core.NewID(),
+		Type:       core.RelationContains,
+		FromNodeID: pkgID,
+		ToNodeID:   fileID,
+		Properties: map[string]any{
+			"project_id": result.ProjectID.String(),
+		},
+		CreatedAt: time.Now(),
+	})
+
+	return fileID
 }
 
 // processFileContents processes all content within a file
 func (b *builder) processFileContents(
 	result *core.AnalysisResult,
+	pkg *parser.PackageInfo,
 	file *parser.FileInfo,
 	fileID core.ID,
+	functionNodeMap map[string]core.ID,
+	typeNodeMap map[string]core.ID,
 ) {
 	// Process imports
 	b.processImports(result, file, fileID)
 
-	// Process functions
-	b.processFunctions(result, file, fileID)
+	// Process functions defined in this file
+	for _, fn := range file.Functions {
+		fnID := b.createFunctionNode(result, pkg, fn, fileID)
+		key := fmt.Sprintf("%s.%s", pkg.Path, fn.Name)
+		functionNodeMap[key] = fnID
+	}
 
-	// Process structs and their methods
-	b.processStructs(result, file, fileID)
-
-	// Process interfaces
-	b.processInterfaces(result, file, fileID)
-
-	// Process constants
-	b.processConstants(result, file, fileID)
-
-	// Process variables
-	b.processVariables(result, file, fileID)
+	// Process types defined in this file
+	for _, t := range file.Types {
+		typeID := b.createTypeNode(result, pkg, t, fileID)
+		key := fmt.Sprintf("%s.%s", pkg.Path, t.Name)
+		typeNodeMap[key] = typeID
+	}
 }
 
 // processImports creates import nodes and relationships
@@ -295,7 +267,7 @@ func (b *builder) processImports(result *core.AnalysisResult, file *parser.FileI
 			Type: core.NodeTypeImport,
 			Name: imp.Path,
 			Properties: map[string]any{
-				"alias":      imp.Alias,
+				"name":       imp.Name,
 				"project_id": result.ProjectID.String(),
 			},
 			CreatedAt: time.Now(),
@@ -316,372 +288,267 @@ func (b *builder) processImports(result *core.AnalysisResult, file *parser.FileI
 	}
 }
 
-// processFunctions creates function nodes and relationships
-func (b *builder) processFunctions(result *core.AnalysisResult, file *parser.FileInfo, fileID core.ID) {
-	for i := range file.Functions {
-		fn := &file.Functions[i]
-		fnID := core.NewID()
-		fnNode := core.Node{
-			ID:   fnID,
-			Type: core.NodeTypeFunction,
-			Name: fn.Name,
-			Properties: map[string]any{
-				"signature":   fn.Signature,
-				"receiver":    fn.Receiver,
-				"is_exported": fn.IsExported,
-				"package":     file.Package,
-				"project_id":  result.ProjectID.String(),
-				"file_path":   file.Path,
-			},
-			CreatedAt: time.Now(),
-		}
-		if b.config.IncludeLineNumbers {
-			fnNode.Properties["line_start"] = fn.LineStart
-			fnNode.Properties["line_end"] = fn.LineEnd
-		}
-		result.Nodes = append(result.Nodes, fnNode)
-
-		// Create file->function relationship
-		result.Relationships = append(result.Relationships, core.Relationship{
-			ID:         core.NewID(),
-			Type:       core.RelationDefines,
-			FromNodeID: fileID,
-			ToNodeID:   fnID,
-			Properties: map[string]any{
-				"project_id": result.ProjectID.String(),
-			},
-			CreatedAt: time.Now(),
-		})
-	}
-}
-
-// processStructs creates struct nodes and their method nodes
-func (b *builder) processStructs(result *core.AnalysisResult, file *parser.FileInfo, fileID core.ID) {
-	for _, st := range file.Structs {
-		stID := b.createStructNode(result, file, fileID, &st)
-		b.processStructMethods(result, file, stID, &st)
-	}
-}
-
-// createStructNode creates a struct node and returns its ID
-func (b *builder) createStructNode(
+// createFunctionNode creates a function node
+func (b *builder) createFunctionNode(
 	result *core.AnalysisResult,
-	file *parser.FileInfo,
+	pkg *parser.PackageInfo,
+	fn *parser.FunctionInfo,
 	fileID core.ID,
-	st *parser.StructInfo,
 ) core.ID {
-	stID := core.NewID()
-	stNode := core.Node{
-		ID:   stID,
-		Type: core.NodeTypeStruct,
-		Name: st.Name,
+	fnID := core.NewID()
+
+	// Determine node type based on receiver
+	nodeType := core.NodeTypeFunction
+	if fn.Receiver != nil {
+		nodeType = core.NodeTypeMethod
+	}
+
+	fnNode := core.Node{
+		ID:   fnID,
+		Type: nodeType,
+		Name: fn.Name,
 		Properties: map[string]any{
-			"is_exported": st.IsExported,
-			"package":     file.Package,
+			"is_exported": fn.IsExported,
+			"package":     pkg.Path,
 			"project_id":  result.ProjectID.String(),
-			"file_path":   file.Path,
 		},
 		CreatedAt: time.Now(),
 	}
+
+	// Add signature if available
+	if fn.Signature != nil {
+		fnNode.Properties["signature"] = fn.Signature.String()
+	}
+
+	// Add receiver info for methods
+	if fn.Receiver != nil {
+		fnNode.Properties["receiver"] = fn.Receiver.Name
+		fnNode.Properties["receiver_type"] = getTypeString(fn.Receiver.Type)
+	}
+
 	if b.config.IncludeLineNumbers {
-		stNode.Properties["line_start"] = st.LineStart
-		stNode.Properties["line_end"] = st.LineEnd
+		fnNode.Properties["line_start"] = fn.LineStart
+		fnNode.Properties["line_end"] = fn.LineEnd
 	}
 
-	// Add fields as properties
-	fields := make([]map[string]any, 0, len(st.Fields))
-	for _, field := range st.Fields {
-		fields = append(fields, map[string]any{
-			"name": field.Name,
-			"type": field.Type,
-			"tag":  field.Tag,
-		})
-	}
-	if len(fields) > 0 {
-		stNode.Properties["fields"] = fields
-	}
+	result.Nodes = append(result.Nodes, fnNode)
 
-	result.Nodes = append(result.Nodes, stNode)
-
-	// Create file->struct relationship
+	// Create file->function relationship
 	result.Relationships = append(result.Relationships, core.Relationship{
 		ID:         core.NewID(),
 		Type:       core.RelationDefines,
 		FromNodeID: fileID,
-		ToNodeID:   stID,
+		ToNodeID:   fnID,
 		Properties: map[string]any{
 			"project_id": result.ProjectID.String(),
 		},
 		CreatedAt: time.Now(),
 	})
 
-	return stID
+	return fnID
 }
 
-// processStructMethods creates method nodes for a struct
-func (b *builder) processStructMethods(
+// createTypeNode creates a type node (struct, interface, etc.)
+func (b *builder) createTypeNode(
 	result *core.AnalysisResult,
-	file *parser.FileInfo,
-	stID core.ID,
-	st *parser.StructInfo,
-) {
-	for i := range st.Methods {
-		method := &st.Methods[i]
-		methodID := core.NewID()
-		methodNode := core.Node{
-			ID:   methodID,
-			Type: core.NodeTypeMethod,
-			Name: method.Name,
-			Properties: map[string]any{
-				"signature":   method.Signature,
-				"receiver":    st.Name,
-				"is_exported": method.IsExported,
-				"package":     file.Package,
-				"project_id":  result.ProjectID.String(),
-				"file_path":   file.Path,
-			},
-			CreatedAt: time.Now(),
-		}
-		if b.config.IncludeLineNumbers {
-			methodNode.Properties["line_start"] = method.LineStart
-			methodNode.Properties["line_end"] = method.LineEnd
-		}
-		result.Nodes = append(result.Nodes, methodNode)
+	pkg *parser.PackageInfo,
+	t *parser.TypeInfo,
+	fileID core.ID,
+) core.ID {
+	typeID := core.NewID()
 
-		// Create struct->method relationship
-		result.Relationships = append(result.Relationships, core.Relationship{
-			ID:         core.NewID(),
-			Type:       core.RelationBelongsTo,
-			FromNodeID: methodID,
-			ToNodeID:   stID,
-			Properties: map[string]any{
-				"project_id": result.ProjectID.String(),
-			},
-			CreatedAt: time.Now(),
-		})
+	// Determine node type based on underlying type
+	nodeType := core.NodeTypeStruct
+	if t.Underlying != nil {
+		if _, ok := t.Underlying.(*types.Interface); ok {
+			nodeType = core.NodeTypeInterface
+		}
 	}
-}
 
-// processInterfaces creates interface nodes and relationships
-func (b *builder) processInterfaces(result *core.AnalysisResult, file *parser.FileInfo, fileID core.ID) {
-	for _, iface := range file.Interfaces {
-		ifaceID := core.NewID()
-		ifaceNode := core.Node{
-			ID:   ifaceID,
-			Type: core.NodeTypeInterface,
-			Name: iface.Name,
-			Properties: map[string]any{
-				"is_exported": iface.IsExported,
-				"package":     file.Package,
-				"project_id":  result.ProjectID.String(),
-				"file_path":   file.Path,
-			},
-			CreatedAt: time.Now(),
-		}
-		if b.config.IncludeLineNumbers {
-			ifaceNode.Properties["line_start"] = iface.LineStart
-			ifaceNode.Properties["line_end"] = iface.LineEnd
-		}
+	typeNode := core.Node{
+		ID:   typeID,
+		Type: nodeType,
+		Name: t.Name,
+		Properties: map[string]any{
+			"is_exported": t.IsExported,
+			"package":     pkg.Path,
+			"project_id":  result.ProjectID.String(),
+		},
+		CreatedAt: time.Now(),
+	}
 
-		// Add methods as properties
-		methods := make([]map[string]any, 0, len(iface.Methods))
-		for _, method := range iface.Methods {
-			params := make([]map[string]any, 0, len(method.Parameters))
-			for _, p := range method.Parameters {
-				params = append(params, map[string]any{
-					"name": p.Name,
-					"type": p.Type,
-				})
+	if b.config.IncludeLineNumbers {
+		typeNode.Properties["line_start"] = t.LineStart
+		typeNode.Properties["line_end"] = t.LineEnd
+	}
+
+	// Add fields for structs
+	if len(t.Fields) > 0 {
+		fields := make([]map[string]any, 0, len(t.Fields))
+		for _, field := range t.Fields {
+			fieldMap := map[string]any{
+				"name":        field.Name,
+				"type":        getTypeString(field.Type),
+				"is_exported": field.IsExported,
+				"anonymous":   field.Anonymous,
 			}
-			methods = append(methods, map[string]any{
-				"name":       method.Name,
-				"parameters": params,
-				"returns":    method.Returns,
-			})
+			if field.Tag != "" {
+				fieldMap["tag"] = field.Tag
+			}
+			fields = append(fields, fieldMap)
 		}
-		if len(methods) > 0 {
-			ifaceNode.Properties["methods"] = methods
+		typeNode.Properties["fields"] = fields
+	}
+
+	result.Nodes = append(result.Nodes, typeNode)
+
+	// Create file->type relationship
+	result.Relationships = append(result.Relationships, core.Relationship{
+		ID:         core.NewID(),
+		Type:       core.RelationDefines,
+		FromNodeID: fileID,
+		ToNodeID:   typeID,
+		Properties: map[string]any{
+			"project_id": result.ProjectID.String(),
+		},
+		CreatedAt: time.Now(),
+	})
+
+	return typeID
+}
+
+// processPackageTypes processes types at package level (methods, etc.)
+func (b *builder) processPackageTypes(
+	result *core.AnalysisResult,
+	pkg *parser.PackageInfo,
+	_ core.ID,
+	typeNodeMap map[string]core.ID,
+) {
+	// Process interfaces with their methods
+	for _, iface := range pkg.Interfaces {
+		key := fmt.Sprintf("%s.%s", pkg.Path, iface.Name)
+		if ifaceID, exists := typeNodeMap[key]; exists {
+			// Add interface methods as properties
+			if len(iface.Methods) > 0 {
+				methods := make([]map[string]any, 0, len(iface.Methods))
+				for _, method := range iface.Methods {
+					methodMap := map[string]any{
+						"name": method.Name,
+					}
+					if method.Signature != nil {
+						methodMap["signature"] = method.Signature.String()
+					}
+					methods = append(methods, methodMap)
+				}
+
+				// Update the interface node with methods
+				for i, node := range result.Nodes {
+					if node.ID == ifaceID {
+						result.Nodes[i].Properties["methods"] = methods
+						break
+					}
+				}
+			}
 		}
-
-		result.Nodes = append(result.Nodes, ifaceNode)
-
-		// Create file->interface relationship
-		result.Relationships = append(result.Relationships, core.Relationship{
-			ID:         core.NewID(),
-			Type:       core.RelationDefines,
-			FromNodeID: fileID,
-			ToNodeID:   ifaceID,
-			Properties: map[string]any{
-				"project_id": result.ProjectID.String(),
-			},
-			CreatedAt: time.Now(),
-		})
 	}
 }
 
-// processConstants creates constant nodes and relationships
-func (b *builder) processConstants(result *core.AnalysisResult, file *parser.FileInfo, fileID core.ID) {
-	for _, cnst := range file.Constants {
-		cnstID := core.NewID()
-		cnstNode := core.Node{
-			ID:   cnstID,
-			Type: core.NodeTypeConstant,
-			Name: cnst.Name,
-			Properties: map[string]any{
-				"type":        cnst.Type,
-				"value":       cnst.Value,
-				"is_exported": cnst.IsExported,
-				"package":     file.Package,
-				"project_id":  result.ProjectID.String(),
-				"file_path":   file.Path,
-			},
-			CreatedAt: time.Now(),
+// processPackageFunctions processes functions at package level (linking methods to types)
+func (b *builder) processPackageFunctions(
+	result *core.AnalysisResult,
+	pkg *parser.PackageInfo,
+	_ core.ID,
+	functionNodeMap map[string]core.ID,
+) {
+	// Link methods to their receiver types
+	for _, fn := range pkg.Functions {
+		if fn.Receiver != nil {
+			fnKey := fmt.Sprintf("%s.%s", pkg.Path, fn.Name)
+			if fnID, exists := functionNodeMap[fnKey]; exists {
+				// Find the receiver type node
+				receiverTypeName := fn.Receiver.Name
+
+				// Create method->type relationship
+				for _, node := range result.Nodes {
+					if node.Type == core.NodeTypeStruct && node.Name == receiverTypeName &&
+						node.Properties["package"] == pkg.Path {
+						result.Relationships = append(result.Relationships, core.Relationship{
+							ID:         core.NewID(),
+							Type:       core.RelationBelongsTo,
+							FromNodeID: fnID,
+							ToNodeID:   node.ID,
+							Properties: map[string]any{
+								"project_id": result.ProjectID.String(),
+							},
+							CreatedAt: time.Now(),
+						})
+						break
+					}
+				}
+			}
 		}
-		result.Nodes = append(result.Nodes, cnstNode)
-
-		// Create file->constant relationship
-		result.Relationships = append(result.Relationships, core.Relationship{
-			ID:         core.NewID(),
-			Type:       core.RelationDefines,
-			FromNodeID: fileID,
-			ToNodeID:   cnstID,
-			Properties: map[string]any{
-				"project_id": result.ProjectID.String(),
-			},
-			CreatedAt: time.Now(),
-		})
-	}
-}
-
-// processVariables creates variable nodes and relationships
-func (b *builder) processVariables(result *core.AnalysisResult, file *parser.FileInfo, fileID core.ID) {
-	for _, v := range file.Variables {
-		varID := core.NewID()
-		varNode := core.Node{
-			ID:   varID,
-			Type: core.NodeTypeVariable,
-			Name: v.Name,
-			Properties: map[string]any{
-				"type":        v.Type,
-				"is_exported": v.IsExported,
-				"package":     file.Package,
-				"project_id":  result.ProjectID.String(),
-				"file_path":   file.Path,
-			},
-			CreatedAt: time.Now(),
-		}
-		result.Nodes = append(result.Nodes, varNode)
-
-		// Create file->variable relationship
-		result.Relationships = append(result.Relationships, core.Relationship{
-			ID:         core.NewID(),
-			Type:       core.RelationDefines,
-			FromNodeID: fileID,
-			ToNodeID:   varID,
-			Properties: map[string]any{
-				"project_id": result.ProjectID.String(),
-			},
-			CreatedAt: time.Now(),
-		})
 	}
 }
 
 // addAnalyzerRelationships adds relationships discovered by the analyzer
-func (b *builder) addAnalyzerRelationships(
-	result *core.AnalysisResult,
-	analysisReport *analyzer.AnalysisReport,
-) {
-	// Add function call relationships
-	b.addFunctionCallRelationships(result, analysisReport)
-
+func (b *builder) addAnalyzerRelationships(result *core.AnalysisResult, analysis *analyzer.AnalysisReport) {
 	// Add interface implementation relationships
-	b.addInterfaceImplementationRelationships(result, analysisReport)
+	if len(analysis.InterfaceImplementations) > 0 {
+		b.addImplementationRelationships(result, analysis.InterfaceImplementations)
+	}
 
-	// Add dependency relationships
-	b.addDependencyRelationships(result, analysisReport)
-}
-
-// addFunctionCallRelationships processes function call chains
-func (b *builder) addFunctionCallRelationships(result *core.AnalysisResult, analysis *analyzer.AnalysisReport) {
-	for _, chain := range analysis.CallChains {
-		callerID := b.findFunctionNodeID(result.Nodes, chain.Caller)
-		calleeID := b.findFunctionNodeID(result.Nodes, chain.Callee)
-
-		if callerID != "" && calleeID != "" {
-			rel := core.Relationship{
-				ID:         core.NewID(),
-				Type:       core.RelationCalls,
-				FromNodeID: callerID,
-				ToNodeID:   calleeID,
-				Properties: map[string]any{
-					"call_count": len(chain.CallSites),
-					"project_id": result.ProjectID.String(),
-				},
-				CreatedAt: time.Now(),
-			}
-
-			if chain.IsRecursive {
-				rel.Properties["is_recursive"] = true
-			}
-
-			result.Relationships = append(result.Relationships, rel)
-		}
+	// Add call chain relationships
+	if len(analysis.CallChains) > 0 {
+		b.addCallRelationships(result, analysis.CallChains)
 	}
 }
 
-// addInterfaceImplementationRelationships processes interface implementations
-func (b *builder) addInterfaceImplementationRelationships(
+// addImplementationRelationships adds IMPLEMENTS relationships
+func (b *builder) addImplementationRelationships(
 	result *core.AnalysisResult,
-	analysis *analyzer.AnalysisReport,
+	implementations []*parser.Implementation,
 ) {
-	for _, impl := range analysis.InterfaceImplementations {
-		interfaceID := b.findInterfaceNodeID(result.Nodes, impl.Interface.Name)
-		implementorID := b.findStructNodeID(result.Nodes, impl.Implementor.Name)
+	// Build lookup maps for O(1) access
+	structNodes := make(map[string]*core.Node)
+	ifaceNodes := make(map[string]*core.Node)
 
-		if interfaceID != "" && implementorID != "" {
-			rel := core.Relationship{
-				ID:         core.NewID(),
-				Type:       core.RelationImplements,
-				FromNodeID: implementorID,
-				ToNodeID:   interfaceID,
-				Properties: map[string]any{
-					"is_complete": impl.IsComplete,
-					"project_id":  result.ProjectID.String(),
-				},
-				CreatedAt: time.Now(),
-			}
+	// Index nodes by type and key
+	for i := range result.Nodes {
+		node := &result.Nodes[i]
+		key := fmt.Sprintf("%s.%s", node.Properties["package"], node.Name)
 
-			if len(impl.MissingMethods) > 0 {
-				rel.Properties["missing_methods"] = impl.MissingMethods
-			}
-
-			result.Relationships = append(result.Relationships, rel)
+		switch node.Type {
+		case core.NodeTypeStruct:
+			structNodes[key] = node
+		case core.NodeTypeInterface:
+			ifaceNodes[key] = node
 		}
 	}
-}
 
-// addDependencyRelationships processes dependency graph edges
-func (b *builder) addDependencyRelationships(result *core.AnalysisResult, analysis *analyzer.AnalysisReport) {
-	if analysis.DependencyGraph == nil {
-		return
-	}
-
-	for _, edge := range analysis.DependencyGraph.Edges {
-		if edge.Type != analyzer.DependencyTypeImport {
+	// Process implementations using lookups
+	for _, impl := range implementations {
+		if impl.Type == nil || impl.Interface == nil {
 			continue
 		}
 
-		fromID := b.findFileNodeID(result.Nodes, edge.From)
-		toID := b.findFileNodeID(result.Nodes, edge.To)
+		// Build lookup keys
+		structKey := fmt.Sprintf("%s.%s", getPackageFromType(impl.Type), impl.Type.Name)
+		ifaceKey := fmt.Sprintf("%s.%s", getPackageFromInterface(impl.Interface), impl.Interface.Name)
 
-		if fromID != "" && toID != "" {
+		// Look up nodes in O(1)
+		structNode, structExists := structNodes[structKey]
+		ifaceNode, ifaceExists := ifaceNodes[ifaceKey]
+
+		if structExists && ifaceExists {
 			result.Relationships = append(result.Relationships, core.Relationship{
 				ID:         core.NewID(),
-				Type:       core.RelationDependsOn,
-				FromNodeID: fromID,
-				ToNodeID:   toID,
+				Type:       core.RelationImplements,
+				FromNodeID: structNode.ID,
+				ToNodeID:   ifaceNode.ID,
 				Properties: map[string]any{
-					"project_id": result.ProjectID.String(),
+					"is_complete":     impl.IsComplete,
+					"missing_methods": impl.MissingMethods,
+					"project_id":      result.ProjectID.String(),
 				},
 				CreatedAt: time.Now(),
 			})
@@ -689,67 +556,112 @@ func (b *builder) addDependencyRelationships(result *core.AnalysisResult, analys
 	}
 }
 
-// findFunctionNodeID finds a function or method node by reference
-func (b *builder) findFunctionNodeID(nodes []core.Node, ref *analyzer.FunctionReference) core.ID {
-	for _, node := range nodes {
-		if (node.Type == core.NodeTypeFunction || node.Type == core.NodeTypeMethod) && matchesFunctionRef(&node, ref) {
-			return node.ID
-		}
-	}
-	return ""
-}
+// addCallRelationships adds CALLS relationships
+func (b *builder) addCallRelationships(
+	result *core.AnalysisResult,
+	callChains []*analyzer.CallChain,
+) {
+	// Build node lookup maps for O(1) access
+	functionNodes := b.buildFunctionNodeMap(result)
 
-// findInterfaceNodeID finds an interface node by name
-func (b *builder) findInterfaceNodeID(nodes []core.Node, name string) core.ID {
-	for _, node := range nodes {
-		if node.Type == core.NodeTypeInterface && node.Name == name {
-			return node.ID
-		}
-	}
-	return ""
-}
+	for _, chain := range callChains {
+		callerNode := b.findFunctionNode(functionNodes, chain.Caller)
+		calleeNode := b.findFunctionNode(functionNodes, chain.Callee)
 
-// findStructNodeID finds a struct node by name
-func (b *builder) findStructNodeID(nodes []core.Node, name string) core.ID {
-	for _, node := range nodes {
-		if node.Type == core.NodeTypeStruct && node.Name == name {
-			return node.ID
-		}
-	}
-	return ""
-}
-
-// findFileNodeID finds a file node by path
-func (b *builder) findFileNodeID(nodes []core.Node, path string) core.ID {
-	for _, node := range nodes {
-		if node.Type == core.NodeTypeFile {
-			if props, ok := node.Properties["path"].(string); ok && props == path {
-				return node.ID
+		if callerNode != nil && calleeNode != nil {
+			// Create CALLS relationship
+			props := map[string]any{
+				"project_id":   result.ProjectID.String(),
+				"is_recursive": chain.IsRecursive,
 			}
+
+			// Add call site information
+			if len(chain.CallSites) > 0 {
+				sites := make([]map[string]any, 0, len(chain.CallSites))
+				for _, site := range chain.CallSites {
+					sites = append(sites, map[string]any{
+						"file":   site.File,
+						"line":   site.Line,
+						"column": site.Column,
+					})
+				}
+				props["call_sites"] = sites
+			}
+
+			result.Relationships = append(result.Relationships, core.Relationship{
+				ID:         core.NewID(),
+				Type:       core.RelationCalls,
+				FromNodeID: callerNode.ID,
+				ToNodeID:   calleeNode.ID,
+				Properties: props,
+				CreatedAt:  time.Now(),
+			})
 		}
 	}
+}
+
+// buildFunctionNodeMap creates a map for O(1) function node lookup
+func (b *builder) buildFunctionNodeMap(result *core.AnalysisResult) map[string]*core.Node {
+	functionNodes := make(map[string]*core.Node)
+	for i := range result.Nodes {
+		node := &result.Nodes[i]
+		if node.Type == core.NodeTypeFunction || node.Type == core.NodeTypeMethod {
+			// Build key from package, name, and receiver
+			key := fmt.Sprintf("%s.%s", node.Properties["package"], node.Name)
+			if receiver, ok := node.Properties["receiver"]; ok && receiver != "" {
+				key = fmt.Sprintf("%s.%s.%s", node.Properties["package"], receiver, node.Name)
+			}
+			functionNodes[key] = node
+		}
+	}
+	return functionNodes
+}
+
+// findFunctionNode looks up a function node by reference
+func (b *builder) findFunctionNode(
+	functionNodes map[string]*core.Node,
+	ref *analyzer.FunctionReference,
+) *core.Node {
+	if ref == nil {
+		return nil
+	}
+
+	// Build lookup key
+	key := fmt.Sprintf("%s.%s", ref.Package, ref.Name)
+	if ref.Receiver != "" {
+		key = fmt.Sprintf("%s.%s.%s", ref.Package, ref.Receiver, ref.Name)
+	}
+
+	return functionNodes[key]
+}
+
+// Helper functions
+
+// getTypeString converts a types.Type to string
+func getTypeString(t types.Type) string {
+	if t == nil {
+		return ""
+	}
+	return t.String()
+}
+
+// getPackageFromType extracts package path from TypeInfo
+func getPackageFromType(t *parser.TypeInfo) string {
+	if t.Type == nil {
+		return ""
+	}
+
+	// Try to get package from named type
+	if named, ok := t.Type.(*types.Named); ok {
+		if pkg := named.Obj().Pkg(); pkg != nil {
+			return pkg.Path()
+		}
+	}
+
 	return ""
 }
 
-// matchesFunctionRef checks if a node matches a function reference
-func matchesFunctionRef(node *core.Node, ref *analyzer.FunctionReference) bool {
-	if node.Name != ref.Name {
-		return false
-	}
-
-	// Check package if specified
-	if pkg, ok := node.Properties["package"].(string); ok && ref.Package != "" {
-		if pkg != ref.Package {
-			return false
-		}
-	}
-
-	// Check receiver for methods
-	if receiver, ok := node.Properties["receiver"].(string); ok && ref.Receiver != "" {
-		if receiver != ref.Receiver {
-			return false
-		}
-	}
-
-	return true
+// getPackageFromInterface extracts package path from InterfaceInfo
+func getPackageFromInterface(iface *parser.InterfaceInfo) string {
+	return iface.Package
 }

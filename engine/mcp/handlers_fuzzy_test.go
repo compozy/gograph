@@ -370,9 +370,9 @@ func (m *MockServiceAdapter) ParseProject(ctx context.Context, projectPath strin
 func (m *MockServiceAdapter) AnalyzeProject(
 	ctx context.Context,
 	projectID core.ID,
-	files []*parser.FileInfo,
+	parseResult *parser.ParseResult,
 ) (*analyzer.AnalysisReport, error) {
-	args := m.Called(ctx, projectID, files)
+	args := m.Called(ctx, projectID, parseResult)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}

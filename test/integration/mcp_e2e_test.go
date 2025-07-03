@@ -347,12 +347,12 @@ func (r *realServiceAdapter) ParseProject(ctx context.Context, projectPath strin
 func (r *realServiceAdapter) AnalyzeProject(
 	ctx context.Context,
 	projectID core.ID,
-	files []*parser.FileInfo,
+	parseResult *parser.ParseResult,
 ) (*analyzer.AnalysisReport, error) {
 	analyzerService := analyzer.NewAnalyzer(nil)
 	input := &analyzer.AnalysisInput{
-		ProjectID: string(projectID),
-		Files:     files,
+		ProjectID:   string(projectID),
+		ParseResult: parseResult,
 	}
 	return analyzerService.AnalyzeProject(ctx, input)
 }

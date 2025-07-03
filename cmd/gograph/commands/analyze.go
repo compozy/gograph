@@ -80,11 +80,12 @@ The resulting graph allows you to:
 
 			// Initialize parser configuration from config
 			parserConfig := &parser.Config{
-				IgnoreDirs:     cfg.Analysis.IgnoreDirs,
-				IgnoreFiles:    cfg.Analysis.IgnoreFiles,
-				IncludeTests:   cfg.Analysis.IncludeTests,
-				IncludeVendor:  cfg.Analysis.IncludeVendor,
-				MaxConcurrency: cfg.Analysis.MaxConcurrency,
+				IgnoreDirs:      cfg.Analysis.IgnoreDirs,
+				IgnoreFiles:     cfg.Analysis.IgnoreFiles,
+				IncludeTests:    cfg.Analysis.IncludeTests,
+				IncludeVendor:   cfg.Analysis.IncludeVendor,
+				EnableSSA:       true,
+				EnableCallGraph: true,
 			}
 
 			// Initialize analyzer configuration with defaults
@@ -150,8 +151,16 @@ func runAnalysisWithoutProgress(
 	if err != nil {
 		return fmt.Errorf("failed to parse project: %w", err)
 	}
+
+	// Count total files from packages
+	totalFiles := 0
+	for _, pkg := range parseResult.Packages {
+		totalFiles += len(pkg.Files)
+	}
+
 	logger.Info("parsing completed",
-		"files", len(parseResult.Files),
+		"packages", len(parseResult.Packages),
+		"files", totalFiles,
 		"duration_ms", parseResult.ParseTime)
 
 	// -----
@@ -160,8 +169,8 @@ func runAnalysisWithoutProgress(
 	logger.Info("analyzing project structure")
 	analyzerService := analyzer.NewAnalyzer(analyzerConfig)
 	analysisInput := &analyzer.AnalysisInput{
-		ProjectID: projectID.String(),
-		Files:     parseResult.Files,
+		ProjectID:   projectID.String(),
+		ParseResult: parseResult,
 	}
 	report, err := analyzerService.AnalyzeProject(ctx, analysisInput)
 	if err != nil {
@@ -255,9 +264,15 @@ func runAnalysisWithProgress(
 	// Success with detailed statistics
 	successMsg := "Analysis completed successfully!"
 
+	// Count total files from packages
+	totalFiles := 0
+	for _, pkg := range parseResult.Packages {
+		totalFiles += len(pkg.Files)
+	}
+
 	// Create detailed statistics
 	stats := progress.AnalysisStats{
-		Files:         len(parseResult.Files),
+		Files:         totalFiles,
 		Nodes:         len(graphResult.Nodes),
 		Relationships: len(graphResult.Relationships),
 		Interfaces:    len(report.InterfaceImplementations),
@@ -289,7 +304,17 @@ func runParsingPhase(
 		progressIndicator.Error(fmt.Errorf("failed to parse project: %w", err))
 		return nil, fmt.Errorf("failed to parse project: %w", err)
 	}
-	progressIndicator.UpdateProgress(0.25, fmt.Sprintf("Parsed %d files", len(parseResult.Files)))
+
+	// Count total files from packages
+	totalFiles := 0
+	for _, pkg := range parseResult.Packages {
+		totalFiles += len(pkg.Files)
+	}
+
+	progressIndicator.UpdateProgress(
+		0.25,
+		fmt.Sprintf("Parsed %d files in %d packages", totalFiles, len(parseResult.Packages)),
+	)
 	return parseResult, nil
 }
 
@@ -305,8 +330,8 @@ func runAnalysisPhase(
 
 	analyzerService := analyzer.NewAnalyzer(analyzerConfig)
 	analysisInput := &analyzer.AnalysisInput{
-		ProjectID: projectID.String(),
-		Files:     parseResult.Files,
+		ProjectID:   projectID.String(),
+		ParseResult: parseResult,
 	}
 	progressIndicator.UpdateProgress(0.4, "Analyzing structure and dependencies")
 

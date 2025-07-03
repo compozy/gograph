@@ -11,17 +11,11 @@ type Analyzer interface {
 	// AnalyzeProject performs comprehensive analysis on parsed project data
 	AnalyzeProject(ctx context.Context, input *AnalysisInput) (*AnalysisReport, error)
 
-	// BuildDependencyGraph constructs a dependency graph from file imports
-	BuildDependencyGraph(ctx context.Context, files []*parser.FileInfo) (*DependencyGraph, error)
+	// BuildDependencyGraph constructs a dependency graph from parsed packages
+	BuildDependencyGraph(ctx context.Context, packages []*parser.PackageInfo) (*DependencyGraph, error)
 
-	// DetectInterfaceImplementations finds all structs that implement interfaces
-	DetectInterfaceImplementations(
-		ctx context.Context,
-		files []*parser.FileInfo,
-	) ([]*InterfaceImplementation, error)
-
-	// MapCallChains traces function call relationships
-	MapCallChains(ctx context.Context, files []*parser.FileInfo) ([]*CallChain, error)
+	// MapCallChains traces function call relationships using proper type information
+	MapCallChains(ctx context.Context, packages []*parser.PackageInfo) ([]*CallChain, error)
 
 	// DetectCircularDependencies identifies circular import cycles
 	DetectCircularDependencies(ctx context.Context, graph *DependencyGraph) ([]*CircularDependency, error)
@@ -29,13 +23,13 @@ type Analyzer interface {
 
 // AnalysisInput contains the input data for analysis
 type AnalysisInput struct {
-	ProjectID string             // Project identifier
-	Files     []*parser.FileInfo // Parsed file information
+	ProjectID   string              // Project identifier
+	ParseResult *parser.ParseResult // Complete parse result with type information
 }
 
 // DependencyGraph represents the project's dependency structure
 type DependencyGraph struct {
-	Nodes map[string]*DependencyNode // Map of file path to node
+	Nodes map[string]*DependencyNode // Map of package path to node
 	Edges []*DependencyEdge          // All dependency relationships
 	Root  string                     // Project root path
 }
@@ -73,36 +67,6 @@ const (
 	DependencyTypeInterface DependencyType = "interface"
 	DependencyTypeContains  DependencyType = "contains"
 )
-
-// InterfaceImplementation represents a struct implementing an interface
-type InterfaceImplementation struct {
-	Interface      *InterfaceRef // The interface being implemented with package info
-	Implementor    *StructRef    // The struct implementing it with package info
-	Methods        []MethodMatch // Matched methods
-	IsComplete     bool          // Whether all methods are implemented
-	MissingMethods []string      // Names of unimplemented methods
-}
-
-// InterfaceRef represents an interface with its package information
-type InterfaceRef struct {
-	*parser.InterfaceInfo
-	Package  string // Package name
-	FilePath string // File path where interface is defined
-}
-
-// StructRef represents a struct with its package information
-type StructRef struct {
-	*parser.StructInfo
-	Package  string // Package name
-	FilePath string // File path where struct is defined
-}
-
-// MethodMatch represents a matched interface method implementation
-type MethodMatch struct {
-	InterfaceMethod string // Interface method name
-	StructMethod    string // Implementing method name
-	Signature       string // Method signature
-}
 
 // CallChain represents a function call relationship
 type CallChain struct {
@@ -146,13 +110,13 @@ const (
 
 // AnalysisReport contains comprehensive analysis results
 type AnalysisReport struct {
-	ProjectID                string                     // Project identifier
-	Timestamp                int64                      // Analysis timestamp
-	DependencyGraph          *DependencyGraph           // Project dependencies
-	InterfaceImplementations []*InterfaceImplementation // Interface implementations
-	CallChains               []*CallChain               // Function call relationships
-	CircularDependencies     []*CircularDependency      // Circular import cycles
-	Metrics                  *CodeMetrics               // Code quality metrics
+	ProjectID                string                   // Project identifier
+	Timestamp                int64                    // Analysis timestamp
+	DependencyGraph          *DependencyGraph         // Project dependencies
+	InterfaceImplementations []*parser.Implementation // Interface implementations from parser
+	CallChains               []*CallChain             // Function call relationships
+	CircularDependencies     []*CircularDependency    // Circular import cycles
+	Metrics                  *CodeMetrics             // Code quality metrics
 }
 
 // CodeMetrics contains code quality measurements

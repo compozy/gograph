@@ -15,7 +15,11 @@ type ServiceAdapter interface {
 	ParseProject(ctx context.Context, projectPath string) (*parser.ParseResult, error)
 
 	// Analyze operations
-	AnalyzeProject(ctx context.Context, projectID core.ID, files []*parser.FileInfo) (*analyzer.AnalysisReport, error)
+	AnalyzeProject(
+		ctx context.Context,
+		projectID core.ID,
+		parseResult *parser.ParseResult,
+	) (*analyzer.AnalysisReport, error)
 
 	// Graph operations
 	InitializeProject(ctx context.Context, project *core.Project) error

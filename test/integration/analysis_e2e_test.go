@@ -52,8 +52,8 @@ func TestFullProjectAnalysis(t *testing.T) {
 		projectID := core.NewID()
 
 		analysisInput := &analyzer.AnalysisInput{
-			ProjectID: string(projectID),
-			Files:     parseResult.Files,
+			ProjectID:   string(projectID),
+			ParseResult: parseResult,
 		}
 		analysisReport, err := analyzerService.AnalyzeProject(ctx, analysisInput)
 		require.NoError(t, err)
@@ -172,8 +172,8 @@ func TestFullProjectAnalysis(t *testing.T) {
 		projectID := core.NewID()
 
 		analysisInput := &analyzer.AnalysisInput{
-			ProjectID: string(projectID),
-			Files:     parseResult.Files,
+			ProjectID:   string(projectID),
+			ParseResult: parseResult,
 		}
 		analysisReport, err := analyzerService.AnalyzeProject(ctx, analysisInput)
 		require.NoError(t, err)
