@@ -5,15 +5,18 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/compozy/gograph/engine/analyzer"
 	"github.com/compozy/gograph/engine/graph"
 	"github.com/compozy/gograph/engine/infra"
+	"github.com/compozy/gograph/engine/llm"
 	"github.com/compozy/gograph/engine/mcp"
 	"github.com/compozy/gograph/engine/parser"
 	"github.com/compozy/gograph/pkg/logger"
 	mcpconfig "github.com/compozy/gograph/pkg/mcp"
+	"github.com/joho/godotenv"
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -74,6 +77,11 @@ func RegisterMCPCommand() {
 func runServeMCP(cmd *cobra.Command, _ []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// Load .env file if it exists
+	if err := loadEnvFile(); err != nil {
+		logger.Debug("Could not load .env file", "error", err)
+	}
 
 	config, err := prepareMCPConfiguration(cmd)
 	if err != nil {
@@ -182,9 +190,30 @@ func createMCPServer(config *mcpconfig.Config) *mcp.Server {
 	// Create service adapter
 	serviceAdapter := mcp.NewServiceAdapter(driver, graphService, parserService, analyzerService)
 
-	// Note: For now, pass nils for LLM services since they may not be fully implemented
-	// The core analysis tools will work without them
-	return mcp.NewServer(config, serviceAdapter, nil, nil, nil)
+	// Initialize LLM service if OpenAI API key is available
+	var llmService llm.CypherTranslator
+	openAIKey := viper.GetString("openai.api_key")
+	if openAIKey == "" {
+		openAIKey = os.Getenv("OPENAI_API_KEY")
+	}
+
+	if openAIKey != "" {
+		// Validate API key format
+		if !strings.HasPrefix(openAIKey, "sk-") {
+			logger.Warn("OpenAI API key does not have the expected 'sk-' prefix. It may be invalid.")
+		}
+		logger.Info("Initializing OpenAI LLM service for natural language queries")
+		llmConfig := llm.CypherTranslatorConfig{
+			APIKey: openAIKey,
+			Model:  viper.GetString("openai.model"), // Will use default if not set
+		}
+		llmService = llm.NewOpenAICypherTranslator(llmConfig, graphService)
+	} else {
+		logger.Warn("OpenAI API key not found - natural language queries will use basic fallback")
+	}
+
+	// TODO: Initialize context generator and query builder when implemented
+	return mcp.NewServer(config, serviceAdapter, llmService, nil, nil)
 }
 
 func runMCPServerWithGracefulShutdown(ctx context.Context, cancel context.CancelFunc, server *mcp.Server) {
@@ -252,4 +281,15 @@ func loadMCPConfig() (*mcpconfig.Config, error) {
 	}
 
 	return config, nil
+}
+
+// loadEnvFile loads the .env file from the current directory
+func loadEnvFile() error {
+	err := godotenv.Load()
+	if err != nil {
+		// It's acceptable if the file doesn't exist
+		return fmt.Errorf(".env file not found or failed to load: %w", err)
+	}
+	logger.Info("Loaded .env file from current directory")
+	return nil
 }

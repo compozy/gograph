@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -354,13 +353,7 @@ func (s *Server) handleAnalyzeProject(ctx context.Context, req mcp.CallToolReque
 		return nil, err
 	}
 
-	// Convert response to JSON
-	data, err := json.Marshal(response.Content)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal response: %w", err)
-	}
-
-	return newToolResultJSON(data)
+	return newToolResultFromResponse(response)
 }
 
 func (s *Server) handleQueryDependencies(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -388,12 +381,7 @@ func (s *Server) handleQueryDependencies(ctx context.Context, req mcp.CallToolRe
 		return nil, err
 	}
 
-	data, err := json.Marshal(response.Content)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal response: %w", err)
-	}
-
-	return newToolResultJSON(data)
+	return newToolResultFromResponse(response)
 }
 
 func (s *Server) handleFindImplementations(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -416,12 +404,7 @@ func (s *Server) handleFindImplementations(ctx context.Context, req mcp.CallTool
 		return nil, err
 	}
 
-	data, err := json.Marshal(response.Content)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal response: %w", err)
-	}
-
-	return newToolResultJSON(data)
+	return newToolResultFromResponse(response)
 }
 
 func (s *Server) handleTraceCallChain(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -446,12 +429,7 @@ func (s *Server) handleTraceCallChain(ctx context.Context, req mcp.CallToolReque
 		return nil, err
 	}
 
-	data, err := json.Marshal(response.Content)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal response: %w", err)
-	}
-
-	return newToolResultJSON(data)
+	return newToolResultFromResponse(response)
 }
 
 func (s *Server) handleDetectCircularDeps(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -472,12 +450,7 @@ func (s *Server) handleDetectCircularDeps(ctx context.Context, req mcp.CallToolR
 		return nil, err
 	}
 
-	data, err := json.Marshal(response.Content)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal response: %w", err)
-	}
-
-	return newToolResultJSON(data)
+	return newToolResultFromResponse(response)
 }
 
 func (s *Server) handleGetFunctionInfo(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -504,12 +477,7 @@ func (s *Server) handleGetFunctionInfo(ctx context.Context, req mcp.CallToolRequ
 		return nil, err
 	}
 
-	data, err := json.Marshal(response.Content)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal response: %w", err)
-	}
-
-	return newToolResultJSON(data)
+	return newToolResultFromResponse(response)
 }
 
 func (s *Server) handleListPackages(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -529,12 +497,7 @@ func (s *Server) handleListPackages(ctx context.Context, req mcp.CallToolRequest
 		return nil, err
 	}
 
-	data, err := json.Marshal(response.Content)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal response: %w", err)
-	}
-
-	return newToolResultJSON(data)
+	return newToolResultFromResponse(response)
 }
 
 func (s *Server) handleGetPackageStructure(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -557,12 +520,7 @@ func (s *Server) handleGetPackageStructure(ctx context.Context, req mcp.CallTool
 		return nil, err
 	}
 
-	data, err := json.Marshal(response.Content)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal response: %w", err)
-	}
-
-	return newToolResultJSON(data)
+	return newToolResultFromResponse(response)
 }
 
 func (s *Server) handleExecuteCypher(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -585,12 +543,7 @@ func (s *Server) handleExecuteCypher(ctx context.Context, req mcp.CallToolReques
 		return nil, err
 	}
 
-	data, err := json.Marshal(response.Content)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal response: %w", err)
-	}
-
-	return newToolResultJSON(data)
+	return newToolResultFromResponse(response)
 }
 
 func (s *Server) handleNaturalLanguageQuery(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -613,12 +566,7 @@ func (s *Server) handleNaturalLanguageQuery(ctx context.Context, req mcp.CallToo
 		return nil, err
 	}
 
-	data, err := json.Marshal(response.Content)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal response: %w", err)
-	}
-
-	return newToolResultJSON(data)
+	return newToolResultFromResponse(response)
 }
 
 func (s *Server) handleVerifyCodeExists(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -646,12 +594,7 @@ func (s *Server) handleVerifyCodeExists(ctx context.Context, req mcp.CallToolReq
 		return nil, err
 	}
 
-	data, err := json.Marshal(response.Content)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal response: %w", err)
-	}
-
-	return newToolResultJSON(data)
+	return newToolResultFromResponse(response)
 }
 
 func (s *Server) handleGetCodeContext(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -679,13 +622,7 @@ func (s *Server) handleGetCodeContext(ctx context.Context, req mcp.CallToolReque
 		return nil, err
 	}
 
-	// Extract the string content from the response
-	if len(response.Content) > 0 {
-		if textContent, ok := response.Content[0].(string); ok {
-			return mcp.NewToolResultText(textContent), nil
-		}
-	}
-	return mcp.NewToolResultText("No content available"), nil
+	return newToolResultFromResponse(response)
 }
 
 func (s *Server) handleValidateImportPath(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -708,12 +645,7 @@ func (s *Server) handleValidateImportPath(ctx context.Context, req mcp.CallToolR
 		return nil, err
 	}
 
-	data, err := json.Marshal(response.Content)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal response: %w", err)
-	}
-
-	return newToolResultJSON(data)
+	return newToolResultFromResponse(response)
 }
 
 func (s *Server) handleDetectCodePatterns(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -736,12 +668,7 @@ func (s *Server) handleDetectCodePatterns(ctx context.Context, req mcp.CallToolR
 		return nil, err
 	}
 
-	data, err := json.Marshal(response.Content)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal response: %w", err)
-	}
-
-	return newToolResultJSON(data)
+	return newToolResultFromResponse(response)
 }
 
 func (s *Server) handleGetNamingConventions(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -761,12 +688,7 @@ func (s *Server) handleGetNamingConventions(ctx context.Context, req mcp.CallToo
 		return nil, err
 	}
 
-	data, err := json.Marshal(response.Content)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal response: %w", err)
-	}
-
-	return newToolResultJSON(data)
+	return newToolResultFromResponse(response)
 }
 
 func (s *Server) handleFindTestsForCode(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -794,12 +716,7 @@ func (s *Server) handleFindTestsForCode(ctx context.Context, req mcp.CallToolReq
 		return nil, err
 	}
 
-	data, err := json.Marshal(response.Content)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal response: %w", err)
-	}
-
-	return newToolResultJSON(data)
+	return newToolResultFromResponse(response)
 }
 
 func (s *Server) handleCheckTestCoverage(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -819,12 +736,7 @@ func (s *Server) handleCheckTestCoverage(ctx context.Context, req mcp.CallToolRe
 		return nil, err
 	}
 
-	data, err := json.Marshal(response.Content)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal response: %w", err)
-	}
-
-	return newToolResultJSON(data)
+	return newToolResultFromResponse(response)
 }
 
 func (s *Server) handleListProjects(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -833,12 +745,7 @@ func (s *Server) handleListProjects(ctx context.Context, _ mcp.CallToolRequest) 
 		return nil, err
 	}
 
-	data, err := json.Marshal(response.Content)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal response: %w", err)
-	}
-
-	return newToolResultJSON(data)
+	return newToolResultFromResponse(response)
 }
 
 func (s *Server) handleValidateProject(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -854,12 +761,7 @@ func (s *Server) handleValidateProject(ctx context.Context, req mcp.CallToolRequ
 		return nil, err
 	}
 
-	data, err := json.Marshal(response.Content)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal response: %w", err)
-	}
-
-	return newToolResultJSON(data)
+	return newToolResultFromResponse(response)
 }
 
 // Resource handler implementations

@@ -97,7 +97,7 @@ func (t *OpenAICypherTranslator) GetSchema(ctx context.Context, projectID string
 
 // getSystemPrompt returns the system prompt for Cypher translation
 func (t *OpenAICypherTranslator) getSystemPrompt() string {
-	return `You are a expert Neo4j Cypher query generator. ` +
+	return `You are a expert Neo4j Cypher query generator for Go code analysis. ` +
 		`Your task is to convert natural language questions into precise Cypher queries.
 
 IMPORTANT RULES:
@@ -108,12 +108,32 @@ IMPORTANT RULES:
 5. Always include LIMIT clauses to prevent excessive results (default: 50)
 6. Use parameterized queries when possible
 7. Focus on performance and accuracy
+8. Functions have a 'package' property - use it directly instead of traversing relationships
 
-COMMON PATTERNS:
-- Find functions: MATCH (f:Function) WHERE f.name CONTAINS $name RETURN f
-- Find dependencies: MATCH (f1:File)-[:DEPENDS_ON]->(f2:File) RETURN f1, f2
-- Find callers: MATCH (f1:Function)-[:CALLS]->(f2:Function) WHERE f2.name = $name RETURN f1
-- Find implementations: MATCH (s:Struct)-[:IMPLEMENTS]->(i:Interface) RETURN s, i
+WORKING QUERY EXAMPLES:
+Query: "Show me all handler functions in the mcp package"
+Cypher: MATCH (f:Function) WHERE f.package = 'mcp' AND toLower(f.name) CONTAINS 'handle' RETURN f LIMIT 50
+
+Query: "Find functions that handle MCP requests"
+Cypher: MATCH (f:Function) WHERE toLower(f.name) CONTAINS 'mcp' RETURN f LIMIT 50
+
+Query: "List all functions in package mcp"
+Cypher: MATCH (f:Function) WHERE f.package = 'mcp' RETURN f LIMIT 50
+
+Query: "Show functions with names starting with handle"
+Cypher: MATCH (f:Function) WHERE f.name STARTS WITH 'handle' RETURN f LIMIT 50
+
+Query: "Find all structs in the analyzer package"
+Cypher: MATCH (s:Struct) WHERE s.package = 'analyzer' RETURN s LIMIT 50
+
+Query: "Show interfaces and their implementations"
+Cypher: MATCH (s:Struct)-[:IMPLEMENTS]->(i:Interface) RETURN s.name as struct, i.name as interface LIMIT 50
+
+Query: "Find functions that call a specific function"
+Cypher: MATCH (f1:Function)-[:CALLS]->(f2:Function {name: 'Debug'}) RETURN f1.name, f1.package LIMIT 50
+
+Query: "Show all packages and their file count"
+Cypher: MATCH (p:Package)-[:CONTAINS]->(f:File) RETURN p.name, count(f) as file_count ORDER BY file_count DESC
 
 Return only the Cypher query without any formatting or explanations.`
 }
@@ -147,15 +167,21 @@ func (t *OpenAICypherTranslator) buildSchemaDescription(stats *graph.ProjectStat
 	schema.WriteString("- Constant: Constants with properties: name, type, value, is_exported\n")
 	schema.WriteString("- Import: Import statements with properties: path, alias\n")
 	schema.WriteString("\nRELATIONSHIP TYPES:\n")
-	schema.WriteString("- CONTAINS: Package->File, File->Function/Struct/Interface\n")
-	schema.WriteString("- IMPORTS: File->Package\n")
-	schema.WriteString("- CALLS: Function->Function\n")
-	schema.WriteString("- IMPLEMENTS: Struct->Interface\n")
-	schema.WriteString("- HAS_METHOD: Struct->Function\n")
-	schema.WriteString("- DEPENDS_ON: File->File\n")
-	schema.WriteString("- HAS_FIELD: Struct->Variable\n")
+	schema.WriteString("- CONTAINS: Package->File (packages contain files)\n")
+	schema.WriteString("- DEFINES: File->Function/Struct/Interface/Variable/Constant (files define code elements)\n")
+	schema.WriteString("- IMPORTS: File->Import (files have imports)\n")
+	schema.WriteString("- CALLS: Function->Function (function call relationships)\n")
+	schema.WriteString("- IMPLEMENTS: Struct->Interface (struct implements interface)\n")
+	schema.WriteString("- HAS_METHOD: Struct->Function (struct has methods)\n")
+	schema.WriteString("- DEPENDS_ON: File->File (file dependencies)\n")
+	schema.WriteString("- HAS_FIELD: Struct->Variable (struct has fields)\n")
 	schema.WriteString(fmt.Sprintf("\nDatabase contains %d nodes total.\n", stats.TotalNodes))
 	schema.WriteString(fmt.Sprintf("Database contains %d relationships total.\n", stats.TotalRelationships))
+	schema.WriteString("\nIMPORTANT NOTES:\n")
+	schema.WriteString("- Functions have a 'package' property that can be queried directly\n")
+	schema.WriteString("- To find functions in a package, use: MATCH (f:Function) WHERE f.package = 'packagename'\n")
+	schema.WriteString("- Files DEFINE code elements (not CONTAINS)\n")
+	schema.WriteString("- All nodes have a 'project_id' property for filtering\n")
 	return schema.String()
 }
 

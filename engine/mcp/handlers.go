@@ -879,6 +879,7 @@ func (s *Server) HandleNaturalLanguageQueryInternal(ctx context.Context, input m
 
 	// Use LLM service to translate natural language to Cypher
 	var cypherQuery string
+	var params map[string]any
 	var err error
 
 	if s.llmService != nil {
@@ -886,22 +887,23 @@ func (s *Server) HandleNaturalLanguageQueryInternal(ctx context.Context, input m
 		schema, schemaErr := s.llmService.GetSchema(ctx, projectID)
 		if schemaErr != nil {
 			logger.Warn("Failed to get schema, using fallback", "error", schemaErr)
-			cypherQuery = GenerateFallbackCypher(query, projectID)
+			cypherQuery, params = GenerateFallbackCypher(query, projectID)
 		} else {
 			result, err := s.llmService.Translate(ctx, query, schema)
 			if err != nil {
 				logger.Warn("Failed to translate query with LLM, using fallback", "error", err)
-				cypherQuery = GenerateFallbackCypher(query, projectID)
+				cypherQuery, params = GenerateFallbackCypher(query, projectID)
 			} else {
 				cypherQuery = result.Query
+				// LLM-generated queries should still use project_id parameter
+				params = map[string]any{"project_id": projectID}
 			}
 		}
 	} else {
-		cypherQuery = GenerateFallbackCypher(query, projectID)
+		cypherQuery, params = GenerateFallbackCypher(query, projectID)
 	}
 
 	// Execute the generated Cypher query
-	params := map[string]any{"project_id": projectID}
 	results, err := s.serviceAdapter.ExecuteQuery(ctx, cypherQuery, params)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute generated query: %w", err)
@@ -1059,28 +1061,187 @@ func FilterExported(items []any) []any {
 	return filtered
 }
 
-func GenerateFallbackCypher(naturalQuery, projectID string) string {
-	// Simple fallback query generation based on keywords
+// GenerateFallbackCypher generates a parameterized Cypher query from natural language
+// Returns the query string and a map of parameters to prevent injection attacks
+func GenerateFallbackCypher(naturalQuery, projectID string) (string, map[string]any) {
+	// Enhanced fallback query generation with better keyword parsing
 	query := strings.ToLower(naturalQuery)
 
-	if strings.Contains(query, "function") {
-		return fmt.Sprintf(
-			"MATCH (f:Function {project_id: '%s'}) RETURN f.name, f.package, f.signature LIMIT 10",
-			projectID,
-		)
+	// Extract search terms
+	searchTerms := extractSearchTerms(query)
+
+	// Initialize parameters with project ID
+	params := map[string]any{"project_id": projectID}
+
+	// Determine query type and generate appropriate query
+	switch {
+	case strings.Contains(query, "test") && strings.Contains(query, "file"):
+		return generateTestFileQuery(searchTerms, params)
+	case strings.Contains(query, "function"):
+		return generateFunctionQuery(searchTerms, params)
+	case strings.Contains(query, "package"):
+		return generatePackageQuery(searchTerms, params)
+	case strings.Contains(query, "struct") || strings.Contains(query, "type"):
+		return generateStructQuery(searchTerms, params)
+	case strings.Contains(query, "interface"):
+		return generateInterfaceQuery(searchTerms, params)
+	default:
+		return generateDefaultQuery(params)
 	}
-	if strings.Contains(query, "package") {
-		return fmt.Sprintf("MATCH (p:Package {project_id: '%s'}) RETURN p.name, p.path LIMIT 10", projectID)
-	}
-	if strings.Contains(query, "struct") || strings.Contains(query, "type") {
-		return fmt.Sprintf("MATCH (s:Struct {project_id: '%s'}) RETURN s.name, s.package LIMIT 10", projectID)
-	}
-	if strings.Contains(query, "interface") {
-		return fmt.Sprintf("MATCH (i:Interface {project_id: '%s'}) RETURN i.name, i.package LIMIT 10", projectID)
+}
+
+// extractSearchTerms extracts meaningful words from a query
+func extractSearchTerms(query string) []string {
+	words := strings.Fields(query)
+	var searchTerms []string
+
+	// Common stop words to ignore
+	stopWords := map[string]bool{
+		"show": true, "me": true, "the": true, "a": true, "an": true,
+		"for": true, "in": true, "existing": true, "find": true, "get": true,
+		"list": true, "all": true, "with": true, "from": true, "to": true,
 	}
 
-	// Default: show project overview
-	return fmt.Sprintf("MATCH (n {project_id: '%s'}) RETURN labels(n)[0] as type, count(*) as count", projectID)
+	// Extract search terms
+	for _, word := range words {
+		if !stopWords[word] && len(word) > 2 {
+			searchTerms = append(searchTerms, word)
+		}
+	}
+
+	return searchTerms
+}
+
+// generateTestFileQuery generates a query for finding test files
+func generateTestFileQuery(searchTerms []string, params map[string]any) (string, map[string]any) {
+	conditions := []string{"(f.path CONTAINS '_test.go' OR f.path CONTAINS '/test/')"}
+
+	// Add search term filters with parameterized queries
+	termIndex := 0
+	for _, term := range searchTerms {
+		if term != "test" && term != "file" && term != "files" {
+			paramName := fmt.Sprintf("term%d", termIndex)
+			conditions = append(
+				conditions,
+				fmt.Sprintf("(toLower(f.path) CONTAINS $%s OR toLower(f.name) CONTAINS $%s)", paramName, paramName),
+			)
+			params[paramName] = term
+			termIndex++
+		}
+	}
+
+	queryString := fmt.Sprintf(
+		"MATCH (f:File {project_id: $project_id}) WHERE %s RETURN f.path, f.name LIMIT 20",
+		strings.Join(conditions, " AND "),
+	)
+	return queryString, params
+}
+
+// generateFunctionQuery generates a query for finding functions
+func generateFunctionQuery(searchTerms []string, params map[string]any) (string, map[string]any) {
+	conditions := buildSearchConditions(searchTerms, []string{"function", "functions"}, "f", params)
+	whereClause := ""
+	if len(conditions) > 0 {
+		whereClause = " WHERE " + strings.Join(conditions, " AND ")
+	}
+
+	queryString := fmt.Sprintf(
+		"MATCH (f:Function {project_id: $project_id})%s RETURN f.name, f.package, f.signature LIMIT 20",
+		whereClause,
+	)
+	return queryString, params
+}
+
+// generatePackageQuery generates a query for finding packages
+func generatePackageQuery(searchTerms []string, params map[string]any) (string, map[string]any) {
+	conditions := buildSearchConditions(searchTerms, []string{"package", "packages"}, "p", params)
+	whereClause := ""
+	if len(conditions) > 0 {
+		whereClause = " WHERE " + strings.Join(conditions, " AND ")
+	}
+
+	queryString := fmt.Sprintf(
+		"MATCH (p:Package {project_id: $project_id})%s RETURN p.name, p.path LIMIT 20",
+		whereClause,
+	)
+	return queryString, params
+}
+
+// generateStructQuery generates a query for finding structs
+func generateStructQuery(searchTerms []string, params map[string]any) (string, map[string]any) {
+	conditions := buildSearchConditions(searchTerms, []string{"struct", "type", "structs", "types"}, "s", params)
+	whereClause := ""
+	if len(conditions) > 0 {
+		whereClause = " WHERE " + strings.Join(conditions, " AND ")
+	}
+
+	queryString := fmt.Sprintf(
+		"MATCH (s:Struct {project_id: $project_id})%s RETURN s.name, s.package LIMIT 20",
+		whereClause,
+	)
+	return queryString, params
+}
+
+// generateInterfaceQuery generates a query for finding interfaces
+func generateInterfaceQuery(searchTerms []string, params map[string]any) (string, map[string]any) {
+	conditions := buildSearchConditions(searchTerms, []string{"interface", "interfaces"}, "i", params)
+	whereClause := ""
+	if len(conditions) > 0 {
+		whereClause = " WHERE " + strings.Join(conditions, " AND ")
+	}
+
+	queryString := fmt.Sprintf(
+		"MATCH (i:Interface {project_id: $project_id})%s RETURN i.name, i.package LIMIT 20",
+		whereClause,
+	)
+	return queryString, params
+}
+
+// generateDefaultQuery generates a default overview query
+func generateDefaultQuery(params map[string]any) (string, map[string]any) {
+	defaultQuery := "MATCH (f:Function {project_id: $project_id}) " +
+		"RETURN f.name, f.package, f.is_exported " +
+		"ORDER BY f.package, f.name LIMIT 50"
+	return defaultQuery, params
+}
+
+// buildSearchConditions builds search conditions for queries
+func buildSearchConditions(searchTerms []string, excludeTerms []string, alias string, params map[string]any) []string {
+	conditions := []string{}
+	termIndex := 0
+
+	// Convert excludeTerms to map for efficient lookup
+	excludeMap := make(map[string]bool)
+	for _, term := range excludeTerms {
+		excludeMap[term] = true
+	}
+
+	for _, term := range searchTerms {
+		if !excludeMap[term] {
+			paramName := fmt.Sprintf("term%d", termIndex)
+			nameField := fmt.Sprintf("%s.name", alias)
+			var secondField string
+			if alias == "p" {
+				secondField = fmt.Sprintf("%s.path", alias)
+			} else {
+				secondField = fmt.Sprintf("%s.package", alias)
+			}
+			conditions = append(
+				conditions,
+				fmt.Sprintf(
+					"(toLower(%s) CONTAINS $%s OR toLower(%s) CONTAINS $%s)",
+					nameField,
+					paramName,
+					secondField,
+					paramName,
+				),
+			)
+			params[paramName] = term
+			termIndex++
+		}
+	}
+
+	return conditions
 }
 
 // Remaining stub handlers - These will be implemented in Phase 2

@@ -11,6 +11,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/charmbracelet/log v0.3.1
 	github.com/google/uuid v1.6.0
+	github.com/joho/godotenv v1.5.1
 	github.com/mark3labs/mcp-go v0.32.0
 	github.com/mattn/go-isatty v0.0.20
 	github.com/neo4j/neo4j-go-driver/v5 v5.28.1
