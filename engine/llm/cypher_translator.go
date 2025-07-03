@@ -27,7 +27,7 @@ type CypherTranslatorConfig struct {
 func NewOpenAICypherTranslator(config CypherTranslatorConfig, graphService graph.Service) *OpenAICypherTranslator {
 	model := config.Model
 	if model == "" {
-		model = openai.GPT4o // Use GPT-4o as default for better Cypher generation
+		model = openai.GPT4Dot120250414 // Use gpt-4.1-2025-04-14 as default for better Cypher generation
 	}
 	return &OpenAICypherTranslator{
 		client:       openai.NewClient(config.APIKey),
