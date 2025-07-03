@@ -1,0 +1,27 @@
+{
+  "name": "gograph",
+  "version": "1.0.0",
+  "description": "Go codebase dependency graph analysis tool with Claude Code integration",
+  "type": "module",
+  "scripts": {
+    "hook": "bun run scripts/gograph-hook.ts",
+    "test-hook": "bun run scripts/test-hook.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-code": "^1.0.41"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0"
+  },
+  "engines": {
+    "bun": ">=1.0.0",
+    "go": ">=1.21.0"
+  },
+  "keywords": [
+    "go",
+    "dependency-graph", 
+    "code-analysis",
+    "claude-code",
+    "mcp"
+  ]
+}
