@@ -159,7 +159,7 @@ func (s *Server) HandleExecuteCypherInternal(ctx context.Context, input map[stri
 
 // HandleGetFunctionInfoInternal gets detailed information about a function
 //
-//nolint:funlen // MCP tool handlers can be longer for comprehensive functionality
+//nolint:funlen,gocyclo // MCP tool handlers can be longer and have complex logic
 func (s *Server) HandleGetFunctionInfoInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
 	projectID, ok := input["project_id"].(string)
 	if !ok {
@@ -188,9 +188,10 @@ func (s *Server) HandleGetFunctionInfoInternal(ctx context.Context, input map[st
 		"function", functionName,
 		"package", packageName)
 
-	// Build query to find function
+	// Build query to find function - try exact match first, then fuzzy
 	query := `
-		MATCH (f:Function {project_id: $project_id, name: $function_name})
+		MATCH (f:Function {project_id: $project_id})
+		WHERE f.name = $function_name OR toLower(f.name) CONTAINS toLower($function_name)
 	`
 	params := map[string]any{
 		"project_id":    projectID,
@@ -198,13 +199,16 @@ func (s *Server) HandleGetFunctionInfoInternal(ctx context.Context, input map[st
 	}
 
 	if packageName != "" {
-		query += " WHERE f.package = $package"
+		query += " AND (f.package = $package OR toLower(f.package) CONTAINS toLower($package))"
 		params["package"] = packageName
 	}
 
 	query += `
-		OPTIONAL MATCH (file:File {project_id: $project_id})-[:CONTAINS]->(f)
-		RETURN f, file.path as file_path
+		WITH f
+		OPTIONAL MATCH (file:File {project_id: $project_id})-[:DEFINES]->(f)
+		RETURN f, COALESCE(file.path, f.file_path) as file_path
+		ORDER BY CASE WHEN f.name = $function_name THEN 0 ELSE 1 END
+		LIMIT 1
 	`
 
 	results, err := s.serviceAdapter.ExecuteQuery(ctx, query, params)
@@ -238,15 +242,28 @@ func (s *Server) HandleGetFunctionInfoInternal(ctx context.Context, input map[st
 			functionData["f"])
 	}
 	filePath := ""
-	if fp, ok := functionData["file_path"].(string); ok {
+	if fp, ok := functionData["file_path"].(string); ok && fp != "" {
 		filePath = fp
+	} else if fp, ok := functionNode["file_path"].(string); ok && fp != "" {
+		filePath = fp
+	}
+
+	// Get actual values from functionNode
+	packageActual := packageName
+	if p, ok := functionNode["package"].(string); ok && p != "" {
+		packageActual = p
+	}
+
+	signature := ""
+	if s, ok := functionNode["signature"].(string); ok {
+		signature = s
 	}
 
 	result := map[string]any{
 		"function_name": functionName,
-		"package":       packageName,
-		"signature":     functionNode["signature"],
-		"file":          filePath,
+		"package":       packageActual,
+		"signature":     signature,
+		"file_path":     filePath,
 		"line_start":    functionNode["line_start"],
 		"line_end":      functionNode["line_end"],
 		"is_exported":   functionNode["is_exported"],
@@ -281,27 +298,43 @@ func (s *Server) AddFunctionRelationships(
 ) {
 	if includeCalls {
 		callsQuery := `
-			MATCH (f:Function {project_id: $project_id, name: $function_name})-[:CALLS]->(called:Function)
-			RETURN called.name as name, called.package as package, called.signature as signature
+			MATCH (f:Function {project_id: $project_id})-[:CALLS]->(called:Function)
+			WHERE f.name = $function_name OR toLower(f.name) CONTAINS toLower($function_name)
+			RETURN called.name as name, 
+			       called.package as package, 
+			       called.signature as signature,
+			       called.file_path as file_path,
+			       called.line_start as line_start,
+			       called.is_exported as is_exported
+			ORDER BY called.package, called.name
 		`
 		callsResults, err := s.serviceAdapter.ExecuteQuery(ctx, callsQuery, params)
 		if err != nil {
 			logger.Warn("failed to fetch function calls", "error", err)
 		} else {
 			result["calls"] = callsResults
+			result["calls_count"] = len(callsResults)
 		}
 	}
 
 	if includeCallers {
 		callersQuery := `
-			MATCH (caller:Function)-[:CALLS]->(f:Function {project_id: $project_id, name: $function_name})
-			RETURN caller.name as name, caller.package as package, caller.signature as signature
+			MATCH (caller:Function)-[:CALLS]->(f:Function {project_id: $project_id})
+			WHERE f.name = $function_name OR toLower(f.name) CONTAINS toLower($function_name)
+			RETURN caller.name as name, 
+			       caller.package as package, 
+			       caller.signature as signature,
+			       caller.file_path as file_path,
+			       caller.line_start as line_start,
+			       caller.is_exported as is_exported
+			ORDER BY caller.package, caller.name
 		`
 		callersResults, err := s.serviceAdapter.ExecuteQuery(ctx, callersQuery, params)
 		if err != nil {
 			logger.Warn("failed to fetch function callers", "error", err)
 		} else {
 			result["callers"] = callersResults
+			result["callers_count"] = len(callersResults)
 		}
 	}
 }
@@ -478,7 +511,7 @@ func (s *Server) HandleFindImplementationsInternal(ctx context.Context, input ma
 	query := `
 		MATCH (iface:Interface {project_id: $project_id, name: $interface_name})
 		MATCH (impl:Struct)-[:IMPLEMENTS]->(iface)
-		OPTIONAL MATCH (impl_file:File)-[:CONTAINS]->(impl)
+		OPTIONAL MATCH (impl_file:File)-[:DEFINES]->(impl)
 		RETURN impl, impl_file.path as file_path
 	`
 	params := map[string]any{
@@ -510,7 +543,7 @@ func (s *Server) HandleFindImplementationsInternal(ctx context.Context, input ma
 		implementations[i] = map[string]any{
 			"name":        impl["name"],
 			"package":     impl["package"],
-			"file":        filePath,
+			"file_path":   filePath,
 			"line_start":  impl["line_start"],
 			"line_end":    impl["line_end"],
 			"is_exported": impl["is_exported"],
@@ -542,6 +575,8 @@ func (s *Server) HandleFindImplementationsInternal(ctx context.Context, input ma
 }
 
 // handleTraceCallChain traces call chains between functions
+//
+//nolint:funlen // MCP tool handlers can be longer for comprehensive functionality
 func (s *Server) HandleTraceCallChainInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
 	projectID, ok := input["project_id"].(string)
 	if !ok {
@@ -574,11 +609,22 @@ func (s *Server) HandleTraceCallChainInternal(ctx context.Context, input map[str
 	}
 
 	if toFunction != "" {
-		// Find path between specific functions
+		// Find path between specific functions - try exact match first, then fuzzy
 		query = `
-			MATCH path = (start:Function {project_id: $project_id, name: $from_function})-[:CALLS*1..` + fmt.Sprintf("%d", maxDepth) + `]->(end:Function {name: $to_function})
-			RETURN [node in nodes(path) | {name: node.name, package: node.package}] as call_chain,
-			       length(path) as depth
+			MATCH (start:Function {project_id: $project_id}), (end:Function {project_id: $project_id})
+			WHERE (start.name = $from_function OR toLower(start.name) CONTAINS toLower($from_function))
+			  AND (end.name = $to_function OR toLower(end.name) CONTAINS toLower($to_function))
+			WITH start, end
+			MATCH path = (start)-[:CALLS*1..` + fmt.Sprintf("%d", maxDepth) + `]->(end)
+			RETURN [node in nodes(path) | {
+				name: node.name, 
+				package: node.package,
+				file_path: node.file_path,
+				signature: node.signature
+			}] as call_chain,
+			length(path) as depth,
+			start.name as actual_start,
+			end.name as actual_end
 			ORDER BY depth
 			LIMIT 10
 		`
@@ -586,9 +632,19 @@ func (s *Server) HandleTraceCallChainInternal(ctx context.Context, input map[str
 	} else {
 		// Find all calls from the function up to max depth
 		query = `
-			MATCH path = (start:Function {project_id: $project_id, name: $from_function})-[:CALLS*1..` + fmt.Sprintf("%d", maxDepth) + `]->(called:Function)
-			RETURN [node in nodes(path) | {name: node.name, package: node.package}] as call_chain,
-			       length(path) as depth
+			MATCH (start:Function {project_id: $project_id})
+			WHERE start.name = $from_function OR toLower(start.name) CONTAINS toLower($from_function)
+			WITH start
+			MATCH path = (start)-[:CALLS*1..` + fmt.Sprintf("%d", maxDepth) + `]->(called:Function)
+			WHERE called.project_id = $project_id
+			RETURN [node in nodes(path) | {
+				name: node.name, 
+				package: node.package,
+				file_path: node.file_path,
+				signature: node.signature
+			}] as call_chain,
+			length(path) as depth,
+			start.name as actual_start
 			ORDER BY depth
 			LIMIT 50
 		`
@@ -1146,7 +1202,8 @@ func generateFunctionQuery(searchTerms []string, params map[string]any) (string,
 	}
 
 	queryString := fmt.Sprintf(
-		"MATCH (f:Function {project_id: $project_id})%s RETURN f.name, f.package, f.signature LIMIT 20",
+		"MATCH (f:Function {project_id: $project_id})%s "+
+			"RETURN f.name, f.package, f.signature, f.file_path, f.line_start, f.is_exported LIMIT 20",
 		whereClause,
 	)
 	return queryString, params
@@ -1200,7 +1257,7 @@ func generateInterfaceQuery(searchTerms []string, params map[string]any) (string
 // generateDefaultQuery generates a default overview query
 func generateDefaultQuery(params map[string]any) (string, map[string]any) {
 	defaultQuery := "MATCH (f:Function {project_id: $project_id}) " +
-		"RETURN f.name, f.package, f.is_exported " +
+		"RETURN f.name, f.package, f.signature, f.file_path, f.line_start, f.is_exported " +
 		"ORDER BY f.package, f.name LIMIT 50"
 	return defaultQuery, params
 }
@@ -1275,23 +1332,36 @@ func (s *Server) BuildElementLocationQuery(elementType string) (string, error) {
 	switch elementType {
 	case "function":
 		return `
-			MATCH (f:Function {project_id: $project_id, name: $name})
-			OPTIONAL MATCH (file:File)-[:CONTAINS]->(f)
-			RETURN f.line_start as line_start, f.line_end as line_end, file.path as file_path
+			MATCH (f:Function {project_id: $project_id})
+			WHERE f.name = $name OR toLower(f.name) CONTAINS toLower($name)
+			OPTIONAL MATCH (file:File)-[:DEFINES]->(f)
+			RETURN f.line_start as line_start, f.line_end as line_end, 
+			       COALESCE(file.path, f.file_path) as file_path,
+			       f.signature as signature,
+			       f.package as package
+			ORDER BY CASE WHEN f.name = $name THEN 0 ELSE 1 END
 			LIMIT 1
 		`, nil
 	case "struct":
 		return `
-			MATCH (s:Struct {project_id: $project_id, name: $name})
-			OPTIONAL MATCH (file:File)-[:CONTAINS]->(s)
-			RETURN s.line_start as line_start, s.line_end as line_end, file.path as file_path
+			MATCH (s:Struct {project_id: $project_id})
+			WHERE s.name = $name OR toLower(s.name) CONTAINS toLower($name)
+			OPTIONAL MATCH (file:File)-[:DEFINES]->(s)
+			RETURN s.line_start as line_start, s.line_end as line_end, 
+			       COALESCE(file.path, s.file_path) as file_path,
+			       s.package as package
+			ORDER BY CASE WHEN s.name = $name THEN 0 ELSE 1 END
 			LIMIT 1
 		`, nil
 	case "interface":
 		return `
-			MATCH (i:Interface {project_id: $project_id, name: $name})
-			OPTIONAL MATCH (file:File)-[:CONTAINS]->(i)
-			RETURN i.line_start as line_start, i.line_end as line_end, file.path as file_path
+			MATCH (i:Interface {project_id: $project_id})
+			WHERE i.name = $name OR toLower(i.name) CONTAINS toLower($name)
+			OPTIONAL MATCH (file:File)-[:DEFINES]->(i)
+			RETURN i.line_start as line_start, i.line_end as line_end, 
+			       COALESCE(file.path, i.file_path) as file_path,
+			       i.package as package
+			ORDER BY CASE WHEN i.name = $name THEN 0 ELSE 1 END
 			LIMIT 1
 		`, nil
 	default:
@@ -1331,6 +1401,8 @@ func (s *Server) ParseCodeContextInput(
 }
 
 // ExtractCodeContextFromResults processes query results and extracts code context
+//
+//nolint:funlen // MCP handler functions can be comprehensive for full source code extraction
 func (s *Server) ExtractCodeContextFromResults(
 	results []map[string]any,
 	projectID, elementType, name string,
@@ -1363,6 +1435,10 @@ func (s *Server) ExtractCodeContextFromResults(
 	if !ok {
 		lineStart = 1 // Default to line 1 if not available
 	}
+	lineEnd := lineStart
+	if le, ok := elementData["line_end"].(int64); ok {
+		lineEnd = le
+	}
 
 	if filePath == "" {
 		return &ToolResponse{
@@ -1375,25 +1451,54 @@ func (s *Server) ExtractCodeContextFromResults(
 		}, nil
 	}
 
-	// Read the file and extract context
-	contextCode, err := s.ReadFileContext(filePath, int(lineStart), contextLines)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read file context: %w", err)
+	// Read the entire function/struct/interface if context_lines is 0
+	startLine := int(lineStart)
+	endLine := int(lineEnd)
+	if contextLines > 0 {
+		// Include context around the element
+		startLine = max(1, int(lineStart)-contextLines)
+		endLine = int(lineEnd) + contextLines
 	}
 
-	result := fmt.Sprintf("// File: %s (around line %d)\n%s", filePath, lineStart, contextCode)
+	// Read the file and extract the source code
+	sourceCode, err := s.ReadFileLines(filePath, startLine, endLine)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file: %w", err)
+	}
+
+	// Build metadata
+	metadata := map[string]any{
+		"element_type": elementType,
+		"name":         name,
+		"file_path":    filePath,
+		"line_start":   lineStart,
+		"line_end":     lineEnd,
+	}
+
+	// Add additional metadata if available
+	if sig, ok := elementData["signature"].(string); ok && sig != "" {
+		metadata["signature"] = sig
+	}
+	if pkg, ok := elementData["package"].(string); ok && pkg != "" {
+		metadata["package"] = pkg
+	}
+
+	result := map[string]any{
+		"code":     sourceCode,
+		"metadata": metadata,
+	}
 
 	return &ToolResponse{
 		Content: []any{
 			map[string]any{
 				"type": "text",
-				"text": fmt.Sprintf("Code context for %s", name),
+				"text": fmt.Sprintf("Source code for %s '%s' from %s", elementType, name, filePath),
 			},
 			map[string]any{
 				"type": "resource",
 				"resource": map[string]any{
-					"uri":  fmt.Sprintf("/projects/%s/context/%s", projectID, name),
-					"data": map[string]any{"code": result},
+					"uri":  fmt.Sprintf("/projects/%s/source/%s/%s", projectID, elementType, name),
+					"data": result,
 				},
 			},
 		},
@@ -1811,6 +1916,35 @@ func ConvertStatistics(stats *graph.ProjectStatistics) map[string]any {
 		"top_packages":          stats.TopPackages,
 		"top_functions":         stats.TopFunctions,
 	}
+}
+
+// ReadFileLines reads lines from a file between startLine and endLine (inclusive)
+func (s *Server) ReadFileLines(filePath string, startLine, endLine int) (string, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to open file %s: %w", filePath, err)
+	}
+	defer file.Close()
+
+	var result strings.Builder
+	scanner := bufio.NewScanner(file)
+	lineNum := 1
+
+	for scanner.Scan() {
+		if lineNum >= startLine && lineNum <= endLine {
+			result.WriteString(fmt.Sprintf("%4d: %s\n", lineNum, scanner.Text()))
+		}
+		if lineNum > endLine {
+			break
+		}
+		lineNum++
+	}
+
+	if err := scanner.Err(); err != nil {
+		return "", fmt.Errorf("error reading file: %w", err)
+	}
+
+	return result.String(), nil
 }
 
 // ReadFileContext reads lines around a specific line number in a file

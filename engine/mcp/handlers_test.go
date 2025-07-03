@@ -40,7 +40,7 @@ func TestGenerateFallbackCypher(t *testing.T) {
 			name:          "Should find functions with search terms",
 			naturalQuery:  "list all functions in the parser package",
 			projectID:     "test-proj",
-			expectedQuery: "MATCH (f:Function {project_id: $project_id}) WHERE (toLower(f.name) CONTAINS $term0 OR toLower(f.package) CONTAINS $term0) AND (toLower(f.name) CONTAINS $term1 OR toLower(f.package) CONTAINS $term1) RETURN f.name, f.package, f.signature LIMIT 20",
+			expectedQuery: "MATCH (f:Function {project_id: $project_id}) WHERE (toLower(f.name) CONTAINS $term0 OR toLower(f.package) CONTAINS $term0) AND (toLower(f.name) CONTAINS $term1 OR toLower(f.package) CONTAINS $term1) RETURN f.name, f.package, f.signature, f.file_path, f.line_start, f.is_exported LIMIT 20",
 			expectedParams: map[string]any{
 				"project_id": "test-proj",
 				"term0":      "parser",
@@ -51,7 +51,7 @@ func TestGenerateFallbackCypher(t *testing.T) {
 			name:          "Should find all functions without filters",
 			naturalQuery:  "show all functions",
 			projectID:     "test-proj",
-			expectedQuery: "MATCH (f:Function {project_id: $project_id}) RETURN f.name, f.package, f.signature LIMIT 20",
+			expectedQuery: "MATCH (f:Function {project_id: $project_id}) RETURN f.name, f.package, f.signature, f.file_path, f.line_start, f.is_exported LIMIT 20",
 			expectedParams: map[string]any{
 				"project_id": "test-proj",
 			},
@@ -111,7 +111,7 @@ func TestGenerateFallbackCypher(t *testing.T) {
 			naturalQuery: "what's in this project",
 			projectID:    "test-proj",
 			expectedQuery: "MATCH (f:Function {project_id: $project_id}) " +
-				"RETURN f.name, f.package, f.is_exported " +
+				"RETURN f.name, f.package, f.signature, f.file_path, f.line_start, f.is_exported " +
 				"ORDER BY f.package, f.name LIMIT 50",
 			expectedParams: map[string]any{
 				"project_id": "test-proj",
@@ -121,7 +121,7 @@ func TestGenerateFallbackCypher(t *testing.T) {
 			name:          "Should ignore stop words",
 			naturalQuery:  "show me all the existing functions for the package",
 			projectID:     "test-proj",
-			expectedQuery: "MATCH (f:Function {project_id: $project_id}) WHERE (toLower(f.name) CONTAINS $term0 OR toLower(f.package) CONTAINS $term0) RETURN f.name, f.package, f.signature LIMIT 20",
+			expectedQuery: "MATCH (f:Function {project_id: $project_id}) WHERE (toLower(f.name) CONTAINS $term0 OR toLower(f.package) CONTAINS $term0) RETURN f.name, f.package, f.signature, f.file_path, f.line_start, f.is_exported LIMIT 20",
 			expectedParams: map[string]any{
 				"project_id": "test-proj",
 				"term0":      "package",
@@ -131,7 +131,7 @@ func TestGenerateFallbackCypher(t *testing.T) {
 			name:          "Should ignore short words",
 			naturalQuery:  "find function by id",
 			projectID:     "test-proj",
-			expectedQuery: "MATCH (f:Function {project_id: $project_id}) RETURN f.name, f.package, f.signature LIMIT 20",
+			expectedQuery: "MATCH (f:Function {project_id: $project_id}) RETURN f.name, f.package, f.signature, f.file_path, f.line_start, f.is_exported LIMIT 20",
 			expectedParams: map[string]any{
 				"project_id": "test-proj",
 			},

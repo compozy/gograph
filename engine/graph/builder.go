@@ -331,6 +331,7 @@ func (b *builder) processFunctions(result *core.AnalysisResult, file *parser.Fil
 				"is_exported": fn.IsExported,
 				"package":     file.Package,
 				"project_id":  result.ProjectID.String(),
+				"file_path":   file.Path,
 			},
 			CreatedAt: time.Now(),
 		}
@@ -378,6 +379,7 @@ func (b *builder) createStructNode(
 			"is_exported": st.IsExported,
 			"package":     file.Package,
 			"project_id":  result.ProjectID.String(),
+			"file_path":   file.Path,
 		},
 		CreatedAt: time.Now(),
 	}
@@ -436,6 +438,7 @@ func (b *builder) processStructMethods(
 				"is_exported": method.IsExported,
 				"package":     file.Package,
 				"project_id":  result.ProjectID.String(),
+				"file_path":   file.Path,
 			},
 			CreatedAt: time.Now(),
 		}
@@ -471,6 +474,7 @@ func (b *builder) processInterfaces(result *core.AnalysisResult, file *parser.Fi
 				"is_exported": iface.IsExported,
 				"package":     file.Package,
 				"project_id":  result.ProjectID.String(),
+				"file_path":   file.Path,
 			},
 			CreatedAt: time.Now(),
 		}
@@ -529,6 +533,7 @@ func (b *builder) processConstants(result *core.AnalysisResult, file *parser.Fil
 				"is_exported": cnst.IsExported,
 				"package":     file.Package,
 				"project_id":  result.ProjectID.String(),
+				"file_path":   file.Path,
 			},
 			CreatedAt: time.Now(),
 		}
@@ -561,6 +566,7 @@ func (b *builder) processVariables(result *core.AnalysisResult, file *parser.Fil
 				"is_exported": v.IsExported,
 				"package":     file.Package,
 				"project_id":  result.ProjectID.String(),
+				"file_path":   file.Path,
 			},
 			CreatedAt: time.Now(),
 		}
