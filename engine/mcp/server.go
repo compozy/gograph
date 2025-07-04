@@ -231,19 +231,6 @@ func (s *Server) registerQueryTools() {
 	)
 	s.mcpServer.AddTool(executeCypherTool, s.handleExecuteCypher)
 
-	// natural_language_query tool
-	naturalLanguageQueryTool := mcp.NewTool(
-		"natural_language_query",
-		mcp.WithDescription("Convert natural language to Cypher and execute"),
-		mcp.WithString(
-			"project_id",
-			mcp.Description("Project identifier (optional - will be derived from config if not provided)"),
-		),
-		mcp.WithString("query", mcp.Required(), mcp.Description("Natural language query")),
-		mcp.WithString("context", mcp.Description("Additional context for the query")),
-	)
-	s.mcpServer.AddTool(naturalLanguageQueryTool, s.handleNaturalLanguageQuery)
-
 	// get_database_schema tool
 	getDatabaseSchemaTool := mcp.NewTool(
 		"get_database_schema",
@@ -617,27 +604,6 @@ func (s *Server) handleExecuteCypher(ctx context.Context, req mcp.CallToolReques
 		"project_id": projectID,
 		"query":      query,
 		"parameters": parameters,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	return newToolResultFromResponse(response)
-}
-
-func (s *Server) handleNaturalLanguageQuery(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	// project_id is now optional - will be derived from config if not provided
-	projectID := getString(req, "project_id")
-	query, err := req.RequireString("query")
-	if err != nil {
-		return nil, err
-	}
-	context := getString(req, "context")
-
-	response, err := s.HandleNaturalLanguageQueryInternal(ctx, map[string]any{
-		"project_id": projectID,
-		"query":      query,
-		"context":    context,
 	})
 	if err != nil {
 		return nil, err

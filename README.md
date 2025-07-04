@@ -45,7 +45,7 @@ cd /path/to/project-a
 gograph init --project-id backend-api --project-name "Backend API"
 gograph analyze
 
-# Project B  
+# Project B
 cd /path/to/project-b
 gograph init --project-id frontend-app --project-name "Frontend App"
 gograph analyze
@@ -57,7 +57,7 @@ gograph analyze
 ## 📋 Table of Contents
 
 - [Project Isolation](#️-project-isolation)
-- [Installation](#installation)  
+- [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Complete Workflow](#-complete-codebase-analysis-workflow)
 - [Usage](#usage)
@@ -222,6 +222,7 @@ LIMIT 20
 **Useful Browser Commands:**
 
 See [docs/QUERIES.md](docs/QUERIES.md) for more queries including:
+
 - Node and relationship type discovery
 - Circular dependency detection
 - Package dependency analysis
@@ -231,8 +232,9 @@ See [docs/QUERIES.md](docs/QUERIES.md) for more queries including:
 ### 5. Advanced Analysis Examples
 
 For advanced analysis queries, see [docs/QUERIES.md](docs/QUERIES.md) which includes:
+
 - Finding unused functions
-- Analyzing test coverage by package  
+- Analyzing test coverage by package
 - Finding interface implementations
 - Detecting circular dependencies
 - Identifying code complexity hotspots
@@ -273,6 +275,7 @@ Flags:
 ```
 
 **Examples:**
+
 ```bash
 # Basic initialization with required project ID
 gograph init --project-id my-backend-api
@@ -306,6 +309,7 @@ Flags:
 ```
 
 **Examples:**
+
 ```bash
 # Analyze current directory (uses config from gograph.yaml)
 gograph analyze
@@ -356,6 +360,7 @@ Flags:
 ```
 
 **Examples:**
+
 ```bash
 # Clear current project (reads project ID from gograph.yaml)
 gograph clear
@@ -410,15 +415,15 @@ Create a `gograph.yaml` file in your project root:
 
 ```yaml
 project:
-  id: my-project-id              # Required: Unique project identifier
-  name: my-project               # Optional: Human-readable name (defaults to id)
-  root_path: .                   # Optional: Project root path (defaults to ".")
+  id: my-project-id # Required: Unique project identifier
+  name: my-project # Optional: Human-readable name (defaults to id)
+  root_path: . # Optional: Project root path (defaults to ".")
 
 neo4j:
-  uri: bolt://localhost:7687     # Neo4j connection URI
-  username: neo4j                # Neo4j username
-  password: password             # Neo4j password
-  database: ""                   # Optional: Database name (uses default if empty)
+  uri: bolt://localhost:7687 # Neo4j connection URI
+  username: neo4j # Neo4j username
+  password: password # Neo4j password
+  database: "" # Optional: Database name (uses default if empty)
 
 analysis:
   ignore_dirs:
@@ -504,6 +509,7 @@ export GOGRAPH_MCP_PORT=8080
 For a comprehensive collection of Cypher queries organized by use case, see [docs/QUERIES.md](docs/QUERIES.md).
 
 Quick examples:
+
 ```cypher
 -- Find most called functions
 MATCH (f:Function)<-[:CALLS]-(caller)
@@ -512,7 +518,7 @@ RETURN f.name, count(caller) as call_count
 ORDER BY call_count DESC
 LIMIT 10
 
--- Find interface implementations  
+-- Find interface implementations
 MATCH (s:Struct)-[:IMPLEMENTS]->(i:Interface)
 WHERE s.project_id = 'my-project'
 RETURN i.name as Interface, collect(s.name) as Implementations
@@ -545,11 +551,13 @@ Add to your Claude Desktop configuration (`~/Library/Application Support/Claude/
 **Note:** All MCP tools now support automatic project ID discovery from your `gograph.yaml` configuration file. When using MCP tools, you no longer need to provide the `project_id` parameter - it will be automatically derived from the project's configuration file.
 
 **Project Management:**
+
 - `list_projects`: List all projects in the database
 - `validate_project`: Validate project existence and configuration
 - `analyze_project`: Analyze a Go project with full isolation
 
 **Code Analysis:**
+
 - `query_dependencies`: Query project dependencies with filtering
 - `get_function_info`: Get detailed function information
 - `list_packages`: List all packages in a specific project
@@ -558,20 +566,164 @@ Add to your Claude Desktop configuration (`~/Library/Application Support/Claude/
 - `trace_call_chain`: Trace function call chains
 
 **Querying & Search:**
+
 - `execute_cypher`: Execute custom Cypher queries with project filtering
 - `natural_language_query`: Translate natural language to Cypher
 - `get_code_context`: Get code context for LLM understanding
 
 **Code Quality:**
+
 - `detect_code_patterns`: Detect common design patterns and anti-patterns
 - `check_test_coverage`: Analyze test coverage by package
 - `detect_circular_deps`: Find circular dependencies
 
 **Verification (Anti-Hallucination):**
+
 - `verify_code_exists`: Verify function/type existence
 - `validate_import_path`: Verify import relationships
 
 For detailed MCP integration guide, see [docs/MCP_INTEGRATION.md](docs/MCP_INTEGRATION.md).
+
+## 🧠 LLM Project Configuration (CLAUDE.md)
+
+For optimal LLM assistance with Go projects, add gograph MCP integration to your project's `CLAUDE.md` file. This enables LLMs to understand your codebase structure accurately and provide better assistance.
+
+### Why Use GoGraph MCP for LLMs?
+
+**🎯 Prevents Hallucination**: LLMs can verify actual code structure instead of guessing
+**🔍 Deep Code Understanding**: Access to function calls, dependencies, and architectural patterns  
+**📊 Real-time Analysis**: Up-to-date codebase information for accurate suggestions
+**🏗️ Architectural Insights**: Understanding of package dependencies and design patterns
+
+### When to Use GoGraph MCP
+
+✅ **Recommended for:**
+
+- Large Go codebases (>50 files)
+- Complex microservices with multiple packages
+- Legacy code exploration and refactoring
+- Architectural analysis and design decisions
+- Code review and quality assessment
+- Dependency management and circular dependency detection
+
+✅ **Especially valuable when:**
+
+- Working with unfamiliar codebases
+- Analyzing call chains and function relationships
+- Identifying unused code or dead functions
+- Understanding interface implementations
+- Planning refactoring or architectural changes
+
+### CLAUDE.md Configuration
+
+Add this section to your project's `CLAUDE.md` file:
+
+```markdown
+# Go Codebase Analysis with GoGraph
+
+This project uses GoGraph for deep codebase analysis and LLM integration.
+
+## Available Analysis Tools
+
+When working with this Go codebase, you have access to powerful analysis tools through GoGraph MCP:
+
+### 🔍 Code Structure Analysis
+
+- `analyze_project`: Analyze the entire Go project structure
+- `list_packages`: List all packages in the project
+- `get_package_structure`: Get detailed package information
+- `get_function_info`: Get comprehensive function details
+
+### 🔗 Dependency Analysis
+
+- `query_dependencies`: Analyze package and file dependencies
+- `detect_circular_deps`: Find circular dependencies
+- `trace_call_chain`: Trace function call relationships
+- `find_implementations`: Find interface implementations
+
+### 🎯 Code Quality & Patterns
+
+- `detect_code_patterns`: Identify design patterns and anti-patterns
+- `check_test_coverage`: Analyze test coverage by package
+- `verify_code_exists`: Verify function/type existence (prevents hallucination)
+
+### 🔎 Smart Querying
+
+- `natural_language_query`: Ask questions in natural language about the code
+- `execute_cypher`: Run custom graph queries for complex analysis
+- `get_database_schema`: Understand the code graph structure
+
+## Usage Guidelines for LLMs
+
+### ✅ Always Do:
+
+1. **Verify before suggesting**: Use `verify_code_exists` before making suggestions about functions/types
+2. **Understand structure first**: Use `get_package_structure` when exploring new areas
+3. **Check dependencies**: Use `query_dependencies` before suggesting architectural changes
+4. **Analyze patterns**: Use `detect_code_patterns` to understand existing design approaches
+
+### 🔍 For Code Reviews:
+
+- Use `detect_circular_deps` to identify architectural issues
+- Use `check_test_coverage` to assess test quality
+- Use `trace_call_chain` to understand impact of changes
+
+### 🏗️ For Architectural Decisions:
+
+- Use `analyze_project` for overview understanding
+- Use `find_implementations` to understand interface usage
+- Use `natural_language_query` for complex architectural questions
+
+### 📊 Example Queries:
+
+- "Find all functions that are never called"
+- "Show me the dependency graph for the auth package"
+- "What interfaces are implemented by UserService?"
+- "Find all functions with high complexity"
+```
+
+### Configuration Steps
+
+1. **Install GoGraph**: Follow the [installation instructions](#installation)
+
+2. **Initialize your project**:
+
+   ```bash
+   cd /path/to/your/go/project
+   gograph init --project-id your-project-name
+   ```
+
+3. **Add MCP configuration** to Claude Desktop (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+
+   ```json
+   {
+     "mcpServers": {
+       "gograph": {
+         "command": "gograph",
+         "args": ["serve-mcp"],
+         "env": {
+           "GOGRAPH_CONFIG": "/path/to/your/project/gograph.yaml"
+         }
+       }
+     }
+   }
+   ```
+
+4. **Analyze your project**:
+
+   ```bash
+   gograph analyze
+   ```
+
+5. **Start using LLM assistance** with full codebase awareness!
+
+### Benefits for LLM Interactions
+
+- **Accurate Suggestions**: LLMs can verify function existence and signatures
+- **Context-Aware Recommendations**: Understanding of actual package structure
+- **Dependency-Aware Refactoring**: Knowledge of what calls what
+- **Pattern Recognition**: Identification of existing architectural patterns
+- **Quality Insights**: Test coverage and code quality metrics
 
 ## 🏗 Architecture
 

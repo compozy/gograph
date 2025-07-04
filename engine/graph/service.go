@@ -117,6 +117,22 @@ func (s *service) ImportAnalysis(
 	// Update project ID in result
 	result.ProjectID = projectID
 
+	// Update project_id in all node properties
+	for i := range result.Nodes {
+		if result.Nodes[i].Properties == nil {
+			result.Nodes[i].Properties = make(map[string]any)
+		}
+		result.Nodes[i].Properties["project_id"] = projectID.String()
+	}
+
+	// Update project_id in all relationship properties
+	for i := range result.Relationships {
+		if result.Relationships[i].Properties == nil {
+			result.Relationships[i].Properties = make(map[string]any)
+		}
+		result.Relationships[i].Properties["project_id"] = projectID.String()
+	}
+
 	// Store in repository
 	logger.Debug("importing analysis results",
 		"project_id", projectID,
