@@ -805,12 +805,17 @@ func (s *Server) HandleTraceCallChainInternal(ctx context.Context, input map[str
 	if m, ok := input["max_depth"].(float64); ok {
 		maxDepth = int(m)
 	}
+	reverse := false
+	if r, ok := input["reverse"].(bool); ok {
+		reverse = r
+	}
 
 	logger.Info("tracing call chain",
 		"project_id", projectID,
 		"from", fromFunction,
 		"to", toFunction,
-		"max_depth", maxDepth)
+		"max_depth", maxDepth,
+		"reverse", reverse)
 
 	var query string
 	params := map[string]any{
@@ -821,12 +826,19 @@ func (s *Server) HandleTraceCallChainInternal(ctx context.Context, input map[str
 
 	if toFunction != "" {
 		// Find path between specific functions - try exact match first, then fuzzy
+		var direction string
+		if reverse {
+			// In reverse mode, we find paths from "to" to "from"
+			direction = fmt.Sprintf(`<-[:CALLS*1..%d]-`, maxDepth)
+		} else {
+			direction = fmt.Sprintf(`-[:CALLS*1..%d]->`, maxDepth)
+		}
 		query = `
 			MATCH (start:Function {project_id: $project_id}), (end:Function {project_id: $project_id})
 			WHERE (start.name = $from_function OR toLower(start.name) CONTAINS toLower($from_function))
 			  AND (end.name = $to_function OR toLower(end.name) CONTAINS toLower($to_function))
 			WITH start, end
-			MATCH path = (start)-[:CALLS*1..` + fmt.Sprintf("%d", maxDepth) + `]->(end)
+			MATCH path = (start)` + direction + `(end)
 			RETURN [node in nodes(path) | {
 				name: node.name, 
 				package: node.package,
@@ -841,24 +853,46 @@ func (s *Server) HandleTraceCallChainInternal(ctx context.Context, input map[str
 		`
 		params["to_function"] = toFunction
 	} else {
-		// Find all calls from the function up to max depth
-		query = `
-			MATCH (start:Function {project_id: $project_id})
-			WHERE start.name = $from_function OR toLower(start.name) CONTAINS toLower($from_function)
-			WITH start
-			MATCH path = (start)-[:CALLS*1..` + fmt.Sprintf("%d", maxDepth) + `]->(called:Function)
-			WHERE called.project_id = $project_id
-			RETURN [node in nodes(path) | {
-				name: node.name, 
-				package: node.package,
-				file_path: node.file_path,
-				signature: node.signature
-			}] as call_chain,
-			length(path) as depth,
-			start.name as actual_start
-			ORDER BY depth
-			LIMIT 50
-		`
+		// Find all calls from/to the function up to max depth
+		if reverse {
+			// Find all functions that call the target function
+			query = `
+				MATCH (start:Function {project_id: $project_id})
+				WHERE start.name = $from_function OR toLower(start.name) CONTAINS toLower($from_function)
+				WITH start
+				MATCH path = (caller:Function)-[:CALLS*1..` + fmt.Sprintf("%d", maxDepth) + `]->(start)
+				WHERE caller.project_id = $project_id
+				RETURN [node in nodes(path) | {
+					name: node.name, 
+					package: node.package,
+					file_path: node.file_path,
+					signature: node.signature
+				}] as call_chain,
+				length(path) as depth,
+				start.name as actual_start
+				ORDER BY depth
+				LIMIT 50
+			`
+		} else {
+			// Find all functions called by the source function
+			query = `
+				MATCH (start:Function {project_id: $project_id})
+				WHERE start.name = $from_function OR toLower(start.name) CONTAINS toLower($from_function)
+				WITH start
+				MATCH path = (start)-[:CALLS*1..` + fmt.Sprintf("%d", maxDepth) + `]->(called:Function)
+				WHERE called.project_id = $project_id
+				RETURN [node in nodes(path) | {
+					name: node.name, 
+					package: node.package,
+					file_path: node.file_path,
+					signature: node.signature
+				}] as call_chain,
+				length(path) as depth,
+				start.name as actual_start
+				ORDER BY depth
+				LIMIT 50
+			`
+		}
 	}
 
 	results, err := s.serviceAdapter.ExecuteQuery(ctx, query, params)
@@ -870,15 +904,27 @@ func (s *Server) HandleTraceCallChainInternal(ctx context.Context, input map[str
 		"from_function": fromFunction,
 		"to_function":   toFunction,
 		"max_depth":     maxDepth,
+		"reverse":       reverse,
 		"call_chains":   results,
 		"count":         len(results),
+	}
+
+	var responseText string
+	if reverse {
+		if toFunction != "" {
+			responseText = fmt.Sprintf("Found %d reverse call chains from %s to %s", len(results), fromFunction, toFunction)
+		} else {
+			responseText = fmt.Sprintf("Found %d functions that call %s", len(results), fromFunction)
+		}
+	} else {
+		responseText = fmt.Sprintf("Found %d call chains from %s", len(results), fromFunction)
 	}
 
 	return &ToolResponse{
 		Content: []any{
 			map[string]any{
 				"type": "text",
-				"text": fmt.Sprintf("Found %d call chains from %s", len(results), fromFunction),
+				"text": responseText,
 			},
 			map[string]any{
 				"type": "resource",
