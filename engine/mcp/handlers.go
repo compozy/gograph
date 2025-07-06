@@ -912,7 +912,12 @@ func (s *Server) HandleTraceCallChainInternal(ctx context.Context, input map[str
 	var responseText string
 	if reverse {
 		if toFunction != "" {
-			responseText = fmt.Sprintf("Found %d reverse call chains from %s to %s", len(results), fromFunction, toFunction)
+			responseText = fmt.Sprintf(
+				"Found %d reverse call chains from %s to %s",
+				len(results),
+				fromFunction,
+				toFunction,
+			)
 		} else {
 			responseText = fmt.Sprintf("Found %d functions that call %s", len(results), fromFunction)
 		}
