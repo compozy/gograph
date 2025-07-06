@@ -258,6 +258,8 @@ This workflow gives you a complete view of your codebase structure, dependencies
 
 ## 📖 Usage
 
+For comprehensive CLI command reference, see [docs/CLI_REFERENCE.md](docs/CLI_REFERENCE.md).
+
 ### Commands
 
 #### `gograph init`
@@ -319,6 +321,41 @@ gograph analyze /path/to/project --include-tests --include-vendor --concurrency 
 
 # Override project ID for one-time analysis
 gograph analyze --project-id temporary-analysis
+```
+
+#### `gograph call-chain`
+
+Trace function call chains to understand execution flow and dependencies.
+
+```bash
+gograph call-chain <function-name> [flags]
+
+Flags:
+  -p, --project string   Project ID (defaults to current directory config)
+  -t, --to string        Target function to trace to
+  -d, --depth int        Maximum search depth (default: 5)
+  -r, --reverse          Trace in reverse (find functions that call the target)
+  --format string        Output format: table, json (default: table)
+  --no-progress          Disable progress indicators
+```
+
+**Examples:**
+
+```bash
+# Find all functions called by main
+gograph call-chain main
+
+# Find call paths from Handler to SaveUser
+gograph call-chain Handler --to SaveUser --depth 10
+
+# Find all functions that call SaveUser (reverse)
+gograph call-chain SaveUser --reverse
+
+# Find which functions call ProcessRequest up to main
+gograph call-chain ProcessRequest --to main --reverse
+
+# Output as JSON with specific project
+gograph call-chain Execute --project myproject --format json
 ```
 
 #### `gograph query`
@@ -563,7 +600,7 @@ Add to your Claude Desktop configuration (`~/Library/Application Support/Claude/
 - `list_packages`: List all packages in a specific project
 - `get_package_structure`: Get detailed package structure
 - `find_implementations`: Find interface implementations
-- `trace_call_chain`: Trace function call chains
+- `trace_call_chain`: Trace function call chains (supports `reverse` parameter to find callers)
 
 **Querying & Search:**
 

@@ -261,6 +261,31 @@ LIMIT 20
 Understand how a specific function interacts with the rest of your codebase.
 </details>
 
+<details>
+<summary><strong>Reverse Call Chains (Find Callers)</strong></summary>
+
+```cypher
+// Find all functions that call a specific function
+MATCH path = (caller:Function)-[:CALLS*1..3]->(f:Function {name: "SaveUser"})
+WHERE f.project_id = 'my-awesome-project'
+RETURN path
+LIMIT 20
+
+// Direct callers only
+MATCH (caller:Function)-[:CALLS]->(f:Function {name: "SaveUser"})
+WHERE f.project_id = 'my-awesome-project'
+RETURN caller.name, caller.package, caller.file_path
+ORDER BY caller.package, caller.name
+
+// Find call paths between two specific functions (reverse)
+MATCH path = (end:Function {name: "main"})<-[:CALLS*1..5]-(start:Function {name: "ProcessRequest"})
+WHERE start.project_id = 'my-awesome-project'
+RETURN path
+```
+
+These queries help you understand which parts of your codebase depend on a specific function, useful for impact analysis when modifying functions.
+</details>
+
 ## Interface Analysis
 
 <details>
