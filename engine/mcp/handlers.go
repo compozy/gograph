@@ -284,11 +284,34 @@ func (s *Server) HandleGetFunctionInfoInternal(ctx context.Context, input map[st
 	}
 
 	if len(results) == 0 {
+		// Function not found - find similar functions and use LLM to suggest alternatives
+		similarFunctions, err := s.findSimilarFunctions(ctx, projectID, functionName, packageName)
+		if err != nil {
+			logger.Warn("failed to find similar functions", "error", err)
+		}
+
+		// Generate LLM-powered suggestion message
+		responseText, err := s.generateSimilarFunctionSuggestion(ctx, functionName, similarFunctions)
+		if err != nil {
+			logger.Warn("failed to generate LLM suggestion", "error", err)
+			// Fallback to simple message
+			responseText = fmt.Sprintf("Function %s not found", functionName)
+			if len(similarFunctions) > 0 {
+				responseText += ". Similar functions found: "
+				for i, fn := range similarFunctions {
+					if i > 0 {
+						responseText += ", "
+					}
+					responseText += fmt.Sprintf("%s (in %s)", fn["name"], fn["package"])
+				}
+			}
+		}
+
 		return &ToolResponse{
 			Content: []any{
 				map[string]any{
 					"type": "text",
-					"text": fmt.Sprintf("Function %s not found", functionName),
+					"text": responseText,
 				},
 			},
 		}, nil
@@ -354,6 +377,124 @@ func (s *Server) HandleGetFunctionInfoInternal(ctx context.Context, input map[st
 			},
 		},
 	}, nil
+}
+
+// findSimilarFunctions finds functions with similar names to the requested function
+func (s *Server) findSimilarFunctions(
+	ctx context.Context,
+	projectID, functionName, packageName string,
+) ([]map[string]any, error) {
+	// Query to find functions with similar names using fuzzy matching
+	query := `
+		MATCH (f:Function {project_id: $project_id})
+		WHERE (
+			// Similar name patterns
+			toLower(f.name) CONTAINS toLower($function_name) OR
+			toLower($function_name) CONTAINS toLower(f.name) OR
+			// Levenshtein-like patterns (common prefixes/suffixes)
+			f.name =~ ('.*' + $function_name + '.*') OR
+			f.name =~ ($function_name + '.*') OR
+			f.name =~ ('.*' + $function_name)
+		)
+		AND f.name <> $function_name
+	`
+
+	params := map[string]any{
+		"project_id":    projectID,
+		"function_name": functionName,
+	}
+
+	if packageName != "" {
+		query += " AND f.package = $package"
+		params["package"] = packageName
+	}
+
+	query += `
+		RETURN f.name as name, f.package as package, f.signature as signature
+		ORDER BY 
+			// Prioritize exact substring matches
+			CASE WHEN toLower(f.name) CONTAINS toLower($function_name) THEN 0 ELSE 1 END,
+			// Then by name similarity (length difference)
+			abs(length(f.name) - length($function_name)),
+			f.name
+		LIMIT 5
+	`
+
+	results, err := s.serviceAdapter.ExecuteQuery(ctx, query, params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find similar functions: %w", err)
+	}
+
+	return results, nil
+}
+
+// generateSimilarFunctionSuggestion uses the LLM service to generate a helpful suggestion message
+func (s *Server) generateSimilarFunctionSuggestion(
+	ctx context.Context,
+	requestedFunction string,
+	similarFunctions []map[string]any,
+) (string, error) {
+	if s.llmService == nil {
+		return "", fmt.Errorf("LLM service not available")
+	}
+
+	if len(similarFunctions) == 0 {
+		return fmt.Sprintf("No results for function: %s! No similar functions found.", requestedFunction), nil
+	}
+
+	// Build a natural language prompt for the LLM
+	prompt := fmt.Sprintf(
+		`The user searched for a function named "%s" but it was not found. However, we found these similar functions:
+
+`,
+		requestedFunction,
+	)
+
+	for i, fn := range similarFunctions {
+		name, ok := fn["name"].(string)
+		if !ok {
+			name = "unknown"
+		}
+		pkg, ok := fn["package"].(string)
+		if !ok {
+			pkg = "unknown"
+		}
+		signature, ok := fn["signature"].(string)
+		if !ok {
+			signature = ""
+		}
+
+		prompt += fmt.Sprintf("%d. %s (in package %s)", i+1, name, pkg)
+		if signature != "" {
+			prompt += fmt.Sprintf("\n   Signature: %s", signature)
+		}
+		prompt += "\n"
+	}
+
+	prompt += `
+Please generate a helpful, concise response that:
+1. Tells the user their requested function was not found
+2. Lists the similar functions we found
+3. Uses a friendly, helpful tone
+4. Keeps the response under 200 words
+
+Format the response as plain text suitable for a developer tool.`
+
+	// Use the LLM service to generate a helpful response
+	// Note: We're using the Cypher translator interface, but for a simple text generation task
+	// In a real implementation, you might want a dedicated text generation interface
+	schema := "N/A" // Not needed for this use case
+	response, err := s.llmService.Translate(ctx, prompt, schema)
+	if err != nil {
+		return "", fmt.Errorf("failed to generate LLM response: %w", err)
+	}
+
+	// The response.Query field contains the generated text
+	if response.Query == "" {
+		return "", fmt.Errorf("LLM returned empty response")
+	}
+
+	return response.Query, nil
 }
 
 // AddFunctionRelationships adds calls and callers to function result

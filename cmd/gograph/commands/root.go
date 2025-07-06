@@ -49,6 +49,7 @@ func Execute() {
 
 	// Initialize all commands
 	InitAnalyzeCommand()
+	InitCallChainCommand()
 	InitClearCommand()
 	InitHelpCommands()
 	InitInitCommand()
