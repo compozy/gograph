@@ -151,14 +151,17 @@ func (s *Server) registerNavigationTools() {
 	// trace_call_chain tool
 	traceCallChainTool := mcp.NewTool(
 		"trace_call_chain",
-		mcp.WithDescription("Trace call chains between functions"),
+		mcp.WithDescription("Trace function call chains (default: backward - show callers)"),
 		mcp.WithString(
 			"project_id",
 			mcp.Description("Project identifier (optional - will be derived from config if not provided)"),
 		),
-		mcp.WithString("from_function", mcp.Required(), mcp.Description("Starting function")),
-		mcp.WithString("to_function", mcp.Description("Target function (optional)")),
+		mcp.WithString("from_function", mcp.Required(), mcp.Description("Target function to trace")),
 		mcp.WithNumber("max_depth", mcp.Description("Maximum search depth")),
+		mcp.WithString(
+			"direction",
+			mcp.Description("Direction: 'backward' (callers) or 'forward' (callees), default: backward"),
+		),
 	)
 	s.mcpServer.AddTool(traceCallChainTool, s.handleTraceCallChain)
 
@@ -492,13 +495,16 @@ func (s *Server) handleTraceCallChain(ctx context.Context, req mcp.CallToolReque
 	if err != nil {
 		return nil, err
 	}
-	toFunction := getString(req, "to_function")
+	direction := getString(req, "direction")
+	if direction == "" {
+		direction = "backward" // Default to backward (callers)
+	}
 	maxDepth := getFloat(req, "max_depth")
 
 	response, err := s.HandleTraceCallChainInternal(ctx, map[string]any{
 		"project_id":    projectID,
 		"from_function": fromFunction,
-		"to_function":   toFunction,
+		"direction":     direction,
 		"max_depth":     int(maxDepth),
 	})
 	if err != nil {

@@ -51,11 +51,10 @@ func TestHandleTraceCallChainInternal_FuzzyMatching(t *testing.T) {
 			},
 		},
 		{
-			name: "Should use fuzzy matching for both from and to functions",
+			name: "Should use fuzzy matching for from function",
 			input: map[string]any{
 				"project_id":    "test-proj",
 				"from_function": "handle",
-				"to_function":   "execute",
 				"max_depth":     5.0,
 			},
 			mockQueryReturns: []map[string]any{
@@ -67,15 +66,13 @@ func TestHandleTraceCallChainInternal_FuzzyMatching(t *testing.T) {
 					},
 					"depth":        3,
 					"actual_start": "HandleRequest",
-					"actual_end":   "ExecuteQuery",
 				},
 			},
 			expectedCount: 1,
 			checkQuery: func(t *testing.T, query string, params map[string]any) {
 				assert.Contains(t, query, "toLower(start.name) CONTAINS toLower($from_function)")
-				assert.Contains(t, query, "toLower(end.name) CONTAINS toLower($to_function)")
 				assert.Equal(t, "handle", params["from_function"])
-				assert.Equal(t, "execute", params["to_function"])
+				assert.NotContains(t, params, "to_function")
 			},
 		},
 		{

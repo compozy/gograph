@@ -49,7 +49,6 @@ func Execute() {
 
 	// Initialize all commands
 	InitAnalyzeCommand()
-	InitCallChainCommand()
 	InitClearCommand()
 	InitHelpCommands()
 	InitInitCommand()
@@ -58,6 +57,7 @@ func Execute() {
 	RegisterLLMCommands()
 	RegisterTemplatesCommand()
 	RegisterMCPCommand()
+	RegisterCallChainCommand()
 
 	// Set help template for better formatting
 	rootCmd.SetHelpTemplate(`{{with (or .Long .Short)}}{{. | trimTrailingWhitespaces}}

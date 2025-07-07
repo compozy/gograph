@@ -172,6 +172,44 @@ gograph clear --force
 gograph clear --all --force
 ```
 
+### `gograph call-chain`
+
+Trace function call chains to understand how functions are connected.
+By default, shows functions that call the target function (backward direction).
+Use `--direction forward` to show functions that the target function calls.
+
+**Usage:**
+```bash
+gograph call-chain <function_name> [flags]
+```
+
+**Flags:**
+- `-d, --depth int`: Maximum depth to trace (default: 5)
+- `--direction string`: Direction: backward (callers) or forward (callees) (default: backward)
+- `-o, --output string`: Output format: tree, json, or list (default: tree)
+- `-p, --project string`: Project ID to use (defaults to current project)
+
+**Examples:**
+```bash
+# Show functions that call 'Execute' (default: backward)
+gograph call-chain Execute
+
+# Show functions that 'Execute' calls (forward)
+gograph call-chain Execute --direction forward
+
+# Limit depth and output as JSON
+gograph call-chain Execute --depth 3 --output json
+
+# Search for method calls
+gograph call-chain "(*Analyzer).ProcessFile"
+
+# Output as a simple list
+gograph call-chain HandleRequest --output list
+
+# Use a specific project
+gograph call-chain Execute --project my-backend-api
+```
+
 ### `gograph serve-mcp`
 
 Start the Model Context Protocol (MCP) server for LLM integration.

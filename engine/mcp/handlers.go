@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -17,6 +18,11 @@ import (
 	"github.com/compozy/gograph/pkg/config"
 	"github.com/compozy/gograph/pkg/logger"
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
+)
+
+const (
+	DirectionBackward = "backward"
+	DirectionForward  = "forward"
 )
 
 // Tool handler implementations - These replace the stub implementations
@@ -786,8 +792,31 @@ func (s *Server) HandleFindImplementationsInternal(ctx context.Context, input ma
 
 // handleTraceCallChain traces call chains between functions
 //
-//nolint:funlen // MCP tool handlers can be longer for comprehensive functionality
+
 func (s *Server) HandleTraceCallChainInternal(ctx context.Context, input map[string]any) (*ToolResponse, error) {
+	// Parse and validate parameters
+	params, err := s.parseTraceCallChainParams(input)
+	if err != nil {
+		return nil, err
+	}
+
+	logger.Info("tracing call chain",
+		"project_id", params["project_id"],
+		"from", params["from_function"],
+		"direction", params["direction"],
+		"max_depth", params["max_depth"])
+
+	// Build and execute query
+	results, err := s.executeTraceCallChainQuery(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+
+	// Build response
+	return s.buildTraceCallChainResponse(params, results), nil
+}
+
+func (s *Server) parseTraceCallChainParams(input map[string]any) (map[string]any, error) {
 	// Get project ID using helper
 	projectID, err := s.getProjectID(input)
 	if err != nil {
@@ -797,102 +826,80 @@ func (s *Server) HandleTraceCallChainInternal(ctx context.Context, input map[str
 	if !ok {
 		return nil, fmt.Errorf("from_function is required")
 	}
-	toFunction := ""
-	if t, ok := input["to_function"].(string); ok {
-		toFunction = t
+	direction := DirectionBackward // Default to backward (callers)
+	if d, ok := input["direction"].(string); ok {
+		direction = d
 	}
+	// Validate direction
+	if direction != DirectionForward && direction != DirectionBackward {
+		return nil, fmt.Errorf(
+			"direction must be '%s' or '%s', got: %s",
+			DirectionForward,
+			DirectionBackward,
+			direction,
+		)
+	}
+
 	maxDepth := 5 // Default depth
 	if m, ok := input["max_depth"].(float64); ok {
 		maxDepth = int(m)
 	}
-	reverse := false
-	if r, ok := input["reverse"].(bool); ok {
-		reverse = r
-	}
 
-	logger.Info("tracing call chain",
-		"project_id", projectID,
-		"from", fromFunction,
-		"to", toFunction,
-		"max_depth", maxDepth,
-		"reverse", reverse)
-
-	var query string
-	params := map[string]any{
+	return map[string]any{
 		"project_id":    projectID,
 		"from_function": fromFunction,
+		"direction":     direction,
 		"max_depth":     maxDepth,
-	}
+	}, nil
+}
 
-	if toFunction != "" {
-		// Find path between specific functions - try exact match first, then fuzzy
-		var direction string
-		if reverse {
-			// In reverse mode, we find paths from "to" to "from"
-			direction = fmt.Sprintf(`<-[:CALLS*1..%d]-`, maxDepth)
-		} else {
-			direction = fmt.Sprintf(`-[:CALLS*1..%d]->`, maxDepth)
-		}
+func (s *Server) executeTraceCallChainQuery(ctx context.Context, params map[string]any) ([]map[string]any, error) {
+	direction, _ := params["direction"].(string) //nolint:errcheck // already validated in parseTraceCallChainParams
+	maxDepth, _ := params["max_depth"].(int)     //nolint:errcheck // already validated in parseTraceCallChainParams
+
+	var query string
+	if direction == DirectionBackward {
+		// Find all functions/methods that call the target function/method
 		query = `
-			MATCH (start:Function {project_id: $project_id}), (end:Function {project_id: $project_id})
-			WHERE (start.name = $from_function OR toLower(start.name) CONTAINS toLower($from_function))
-			  AND (end.name = $to_function OR toLower(end.name) CONTAINS toLower($to_function))
-			WITH start, end
-			MATCH path = (start)` + direction + `(end)
-			RETURN [node in nodes(path) | {
-				name: node.name, 
-				package: node.package,
-				file_path: node.file_path,
-				signature: node.signature
-			}] as call_chain,
-			length(path) as depth,
-			start.name as actual_start,
-			end.name as actual_end
-			ORDER BY depth
-			LIMIT 10
-		`
-		params["to_function"] = toFunction
+		MATCH (start)
+		WHERE (start:Function OR start:Method) 
+		  AND start.project_id = $project_id
+		  AND (start.name = $from_function OR toLower(start.name) CONTAINS toLower($from_function))
+		WITH start
+		MATCH path = (caller)-[:CALLS*1..` + fmt.Sprintf("%d", maxDepth) + `]->(start)
+		WHERE (caller:Function OR caller:Method) AND caller.project_id = $project_id
+		RETURN [node in nodes(path) | {
+			name: node.name, 
+			package: node.package,
+			file_path: node.file_path,
+			signature: node.signature
+		}] as call_chain,
+		length(path) as depth,
+		start.name as actual_start
+		ORDER BY depth
+		LIMIT 50
+	`
 	} else {
-		// Find all calls from/to the function up to max depth
-		if reverse {
-			// Find all functions that call the target function
-			query = `
-				MATCH (start:Function {project_id: $project_id})
-				WHERE start.name = $from_function OR toLower(start.name) CONTAINS toLower($from_function)
-				WITH start
-				MATCH path = (caller:Function)-[:CALLS*1..` + fmt.Sprintf("%d", maxDepth) + `]->(start)
-				WHERE caller.project_id = $project_id
-				RETURN [node in nodes(path) | {
-					name: node.name, 
-					package: node.package,
-					file_path: node.file_path,
-					signature: node.signature
-				}] as call_chain,
-				length(path) as depth,
-				start.name as actual_start
-				ORDER BY depth
-				LIMIT 50
-			`
-		} else {
-			// Find all functions called by the source function
-			query = `
-				MATCH (start:Function {project_id: $project_id})
-				WHERE start.name = $from_function OR toLower(start.name) CONTAINS toLower($from_function)
-				WITH start
-				MATCH path = (start)-[:CALLS*1..` + fmt.Sprintf("%d", maxDepth) + `]->(called:Function)
-				WHERE called.project_id = $project_id
-				RETURN [node in nodes(path) | {
-					name: node.name, 
-					package: node.package,
-					file_path: node.file_path,
-					signature: node.signature
-				}] as call_chain,
-				length(path) as depth,
-				start.name as actual_start
-				ORDER BY depth
-				LIMIT 50
-			`
-		}
+		// Find all functions/methods that the target function/method calls
+		query = `
+		MATCH (start)
+		WHERE (start:Function OR start:Method) 
+		  AND start.project_id = $project_id
+		  AND (start.name = $from_function OR toLower(start.name) CONTAINS toLower($from_function))
+		WITH start
+		MATCH path = (start)-[:CALLS*1..` + fmt.Sprintf("%d", maxDepth) + `]->(callee)
+		WHERE (callee:Function OR callee:Method) AND callee.project_id = $project_id
+		RETURN [node in nodes(path) | {
+			name: node.name, 
+			package: node.package,
+			file_path: node.file_path,
+			signature: node.signature
+		}] as call_chain,
+		length(path) as depth,
+		start.name as actual_start
+		ORDER BY depth
+		LIMIT 50
+	`
 	}
 
 	results, err := s.serviceAdapter.ExecuteQuery(ctx, query, params)
@@ -900,29 +907,35 @@ func (s *Server) HandleTraceCallChainInternal(ctx context.Context, input map[str
 		return nil, fmt.Errorf("failed to trace call chain: %w", err)
 	}
 
+	return results, nil
+}
+
+func (s *Server) buildTraceCallChainResponse(params map[string]any, results []map[string]any) *ToolResponse {
+	fromFunction, _ := params["from_function"].(string) //nolint:errcheck // already validated in parseTraceCallChainParams
+	direction, _ := params["direction"].(string)        //nolint:errcheck // already validated in parseTraceCallChainParams
+	maxDepth, _ := params["max_depth"].(int)            //nolint:errcheck // already validated in parseTraceCallChainParams
+	projectID, _ := params["project_id"].(string)       //nolint:errcheck // already validated in parseTraceCallChainParams
+
+	// Build call tree from results
+	tree := buildCallTree(results, true)
+
+	// Convert tree to JSON-friendly structure
+	jsonTree := convertTreeToJSON(tree)
+
 	result := map[string]any{
 		"from_function": fromFunction,
-		"to_function":   toFunction,
+		"direction":     direction,
 		"max_depth":     maxDepth,
-		"reverse":       reverse,
-		"call_chains":   results,
+		"call_tree":     jsonTree,
+		"raw_chains":    results, // Keep raw data for compatibility
 		"count":         len(results),
 	}
 
 	var responseText string
-	if reverse {
-		if toFunction != "" {
-			responseText = fmt.Sprintf(
-				"Found %d reverse call chains from %s to %s",
-				len(results),
-				fromFunction,
-				toFunction,
-			)
-		} else {
-			responseText = fmt.Sprintf("Found %d functions that call %s", len(results), fromFunction)
-		}
+	if direction == DirectionBackward {
+		responseText = fmt.Sprintf("Found %d functions that call %s", len(results), fromFunction)
 	} else {
-		responseText = fmt.Sprintf("Found %d call chains from %s", len(results), fromFunction)
+		responseText = fmt.Sprintf("Found %d functions that %s calls", len(results), fromFunction)
 	}
 
 	return &ToolResponse{
@@ -939,7 +952,7 @@ func (s *Server) HandleTraceCallChainInternal(ctx context.Context, input map[str
 				},
 			},
 		},
-	}, nil
+	}
 }
 
 // handleDetectCircularDeps detects circular dependencies
@@ -2872,4 +2885,100 @@ func (s *Server) analyzeCypherError(query, errorMsg string) []string {
 	}
 
 	return suggestions
+}
+
+// CallNode represents a node in the call tree
+type CallNode struct {
+	Name     string
+	Package  string
+	Children map[string]*CallNode
+}
+
+// buildCallTree converts flat call chains into a tree structure
+func buildCallTree(results []map[string]any, _ bool) *CallNode {
+	root := &CallNode{
+		Name:     "root",
+		Children: make(map[string]*CallNode),
+	}
+
+	for _, result := range results {
+		callChain, ok := result["call_chain"].([]any)
+		if !ok || len(callChain) == 0 {
+			continue
+		}
+
+		currentNode := root
+		for _, node := range callChain {
+			nodeMap, ok := node.(map[string]any)
+			if !ok {
+				continue
+			}
+
+			name, _ := nodeMap["name"].(string)   //nolint:errcheck // safe to ignore
+			pkg, _ := nodeMap["package"].(string) //nolint:errcheck // safe to ignore
+
+			// Create a unique key for the node
+			key := fmt.Sprintf("%s|%s", name, pkg)
+
+			// Get or create child node
+			if _, exists := currentNode.Children[key]; !exists {
+				currentNode.Children[key] = &CallNode{
+					Name:     name,
+					Package:  pkg,
+					Children: make(map[string]*CallNode),
+				}
+			}
+
+			// Move to the child node for the next iteration
+			currentNode = currentNode.Children[key]
+		}
+	}
+
+	return root
+}
+
+// convertTreeToJSON converts CallNode tree to JSON-friendly structure
+func convertTreeToJSON(node *CallNode) []map[string]any {
+	if node.Name == "root" {
+		// Return children of root as top-level array
+		children := getSortedChildren(node)
+		var result []map[string]any
+		for _, child := range children {
+			result = append(result, nodeToJSON(child))
+		}
+		return result
+	}
+	return []map[string]any{nodeToJSON(node)}
+}
+
+// nodeToJSON converts a single CallNode to JSON structure
+func nodeToJSON(node *CallNode) map[string]any {
+	result := map[string]any{
+		"name":    node.Name,
+		"package": node.Package,
+	}
+
+	children := getSortedChildren(node)
+	if len(children) > 0 {
+		var childrenJSON []map[string]any
+		for _, child := range children {
+			childrenJSON = append(childrenJSON, nodeToJSON(child))
+		}
+		result["calls"] = childrenJSON
+	}
+
+	return result
+}
+
+// getSortedChildren returns children sorted by name for consistent output
+func getSortedChildren(node *CallNode) []*CallNode {
+	var children []*CallNode
+	for _, child := range node.Children {
+		children = append(children, child)
+	}
+	// Sort by name for consistent output
+	sort.Slice(children, func(i, j int) bool {
+		return children[i].Name < children[j].Name
+	})
+	return children
 }
